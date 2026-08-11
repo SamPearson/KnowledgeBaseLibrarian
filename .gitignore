@@ -1,0 +1,5 @@
+# Keep IDE files out of the repo
+.idea
+
+# Don't include virtual environment
+venv
