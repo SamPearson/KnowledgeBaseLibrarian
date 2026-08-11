@@ -1,0 +1,2 @@
+markdown>=3.0
+tkhtmlview>=0.3
