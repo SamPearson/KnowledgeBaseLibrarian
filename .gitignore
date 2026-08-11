@@ -3,3 +3,6 @@
 
 # Don't include virtual environment
 venv
+
+# Ignore Python cache directories
+__pycache__
