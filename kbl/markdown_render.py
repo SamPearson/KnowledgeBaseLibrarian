@@ -7,6 +7,8 @@ Fallback: style a ``tkinter.Text`` widget with tags directly.
 import re
 import tkinter.font as tkfont
 
+from kbl import theme
+
 try:
     import markdown as _markdown
 except ImportError:  # pragma: no cover
@@ -29,7 +31,7 @@ def _setup_tags(widget):
     base = tkfont.Font(font=widget.cget("font"))
     family = base.actual("family")
     size = base.actual("size")
-    monospace = "TkFixedFont"
+    monospace = theme.MONO_FAMILY
 
     for level in range(1, 7):
         widget.tag_configure(
@@ -44,18 +46,18 @@ def _setup_tags(widget):
     widget.tag_configure(
         "md_code_inline",
         font=(monospace, size, "normal"),
-        background="#f0f0f0",
+        background=theme.PALETTE["parchment_alt"],
     )
     widget.tag_configure(
         "md_code_block",
         font=(monospace, size, "normal"),
-        background="#f0f0f0",
+        background=theme.PALETTE["parchment_alt"],
         spacing1=2,
         spacing3=2,
     )
     widget.tag_configure(
         "md_quote",
-        foreground="#666666",
+        foreground=theme.PALETTE["ink_soft"],
         lmargin1=16,
         lmargin2=16,
     )

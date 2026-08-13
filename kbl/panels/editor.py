@@ -2,9 +2,13 @@
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
 
-from kbl import markdown_render
+try:
+    import ttkbootstrap as ttk
+except ImportError:
+    from tkinter import ttk
+
+from kbl import markdown_render, theme
 
 try:
     from tkhtmlview import HTMLLabel
@@ -26,7 +30,7 @@ class EditorPanel(ttk.Frame):
     def _build_toolbar(self):
         bar = ttk.Frame(self)
         bar.pack(side="top", fill="x")
-        self.title_label = ttk.Label(bar, text="No file", anchor="w")
+        self.title_label = ttk.Label(bar, text="No file", anchor="w", style="Dim.TLabel")
         self.title_label.pack(side="left", fill="x", expand=True, padx=4)
         self.save_button = ttk.Button(
             bar, text="Save", command=self.save, width=6, state="disabled"
@@ -43,6 +47,7 @@ class EditorPanel(ttk.Frame):
 
         self.edit_frame = ttk.Frame(body)
         self.text = tk.Text(self.edit_frame, wrap="word", undo=True)
+        theme.style_text(self.text)
         scroll = ttk.Scrollbar(
             self.edit_frame, orient="vertical", command=self.text.yview
         )
@@ -66,13 +71,16 @@ class EditorPanel(ttk.Frame):
 
     def _show_display(self):
         self.edit_frame.pack_forget()
-        if self._html_label is None and HTMLLabel is not None:
-            self._html_label = HTMLLabel(self.display_frame, html="")
-            self._html_label.pack(fill="both", expand=True)
-        if self._fallback_text is None:
+        if HTMLLabel is not None:
+            if self._html_label is None:
+                self._html_label = HTMLLabel(self.display_frame, html="")
+                theme.style_text(self._html_label)
+                self._html_label.pack(fill="both", expand=True)
+        elif self._fallback_text is None:
             self._fallback_text = tk.Text(
                 self.display_frame, wrap="word", state="disabled"
             )
+            theme.style_text(self._fallback_text)
             fallback_scroll = ttk.Scrollbar(
                 self.display_frame, orient="vertical",
                 command=self._fallback_text.yview,
@@ -92,7 +100,8 @@ class EditorPanel(ttk.Frame):
             if html is not None:
                 self._html_label.set_html(html)
                 return
-        markdown_render.render_md_in_text(self._fallback_text, content)
+        if self._fallback_text is not None:
+            markdown_render.render_md_in_text(self._fallback_text, content)
 
     def _on_modified(self, _event=None):
         if self.text.edit_modified():
@@ -144,3 +153,12 @@ class EditorPanel(ttk.Frame):
         name = self.file_path.name if self.file_path else "No file"
         marker = "*" if self._dirty else ""
         self.title_label.config(text=f"{marker}{name}")
+
+    def _restyle(self):
+        """Re-apply theme styling."""
+        theme.style_text(self.text)
+        if self._html_label is not None:
+            theme.style_text(self._html_label)
+        if self._fallback_text is not None:
+            theme.style_text(self._fallback_text)
+            self._refresh_display()

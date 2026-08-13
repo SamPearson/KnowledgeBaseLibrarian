@@ -12,6 +12,7 @@ DEFAULTS = {
     "active_workspace": None,
     "layout": "tree-editor-chat",
     "panel_sizes": {},
+    "active_theme": "dark",
 }
 
 
@@ -38,6 +39,12 @@ class Config:
                 self.data = _deep_merge(DEFAULTS, stored)
             except (json.JSONDecodeError, OSError):
                 self.data = copy.deepcopy(DEFAULTS)
+        if self.data.get("active_theme") == "default":
+            # Migrate the legacy name of the builtin dark theme.
+            self.data["active_theme"] = "dark"
+        if isinstance(self.data.get("active_theme"), str):
+            # Strip accidental whitespace from persisted theme names.
+            self.data["active_theme"] = self.data["active_theme"].strip()
         return self.data
 
     def save(self):

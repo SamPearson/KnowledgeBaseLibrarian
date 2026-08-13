@@ -3,7 +3,14 @@
 import shutil
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, simpledialog
+
+try:
+    import ttkbootstrap as ttk
+except ImportError:
+    from tkinter import ttk
+
+from kbl import theme
 
 
 class FileTreePanel(ttk.Frame):
@@ -14,16 +21,18 @@ class FileTreePanel(ttk.Frame):
 
         bar = ttk.Frame(self)
         bar.pack(side="top", fill="x")
-        self.workspace_label = ttk.Label(bar, text="No workspace", anchor="w")
-        self.workspace_label.pack(side="left", fill="x", expand=True, padx=4)
+        self.workspace_label = ttk.Label(
+            bar, text="No workspace", anchor="w", style="Dim.TLabel"
+        )
+        self.workspace_label.pack(side="left", fill="x", expand=True, padx=6)
         ttk.Button(bar, text="Refresh", command=self.refresh, width=8).pack(
-            side="right", padx=4, pady=2
+            side="right", padx=6, pady=4
         )
 
         self.tree = ttk.Treeview(self, show="tree", selectmode="browse")
         scroll = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(0, 0))
         scroll.pack(side="right", fill="y")
 
         self.tree.bind("<Double-1>", self._on_double_click)
@@ -31,6 +40,7 @@ class FileTreePanel(ttk.Frame):
         self.tree.bind("<Delete>", lambda e: (self._delete_selected(), "break"))
 
         self.menu = tk.Menu(self, tearoff=0)
+        theme.style_menu(self.menu)
         self.menu.add_command(label="New File...", command=self.new_file)
         self.menu.add_command(label="New Folder...", command=self.new_folder)
         self.menu.add_command(label="Delete", command=self._delete_selected)
@@ -185,3 +195,7 @@ class FileTreePanel(ttk.Frame):
             messagebox.showerror("Delete", f"Could not delete: {exc}")
             return
         self.refresh()
+
+    def _restyle(self):
+        """Re-apply theme styling."""
+        theme.style_menu(self.menu)

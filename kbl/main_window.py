@@ -2,12 +2,22 @@
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 
+try:
+    import ttkbootstrap as ttk
+    from ttkbootstrap.constants import *
+    TTKBOOTSTRAP_AVAILABLE = True
+except ImportError:
+    from tkinter import ttk
+    TTKBOOTSTRAP_AVAILABLE = False
+
+from kbl import theme
 from kbl.panels.chat import ChatPanel
 from kbl.panels.editor import EditorPanel
 from kbl.panels.file_tree import FileTreePanel
 from kbl.workspaces import WorkspaceManager
+from kbl.dialogs.theme_selector import ThemeSelectorDialog
 
 LAYOUTS = {
     "tree-editor-chat": ("tree", "editor", "chat"),
@@ -26,7 +36,10 @@ class MainWindow(tk.Tk):
         self.workspaces = WorkspaceManager(config)
 
         self.title("Knowledge Base Librarian")
-        self.geometry("1200x800")
+        self.geometry("1280x820")
+
+        # Apply theme from config
+        theme.apply(self, config.data.get("active_theme", "dark"))
 
         self.panels = {}
         self._layout_var = tk.StringVar(value=config.data["layout"])
@@ -45,7 +58,8 @@ class MainWindow(tk.Tk):
     # ---- panels ----
 
     def _build_panels(self):
-        self._layout_widget = ttk.PanedWindow(self, orient="horizontal")
+        # Note: ttkbootstrap uses Panedwindow (lowercase 'w'), not PanedWindow
+        self._layout_widget = ttk.Panedwindow(self, orient="horizontal")
         self._layout_widget.pack(fill="both", expand=True)
         self.panels["tree"] = FileTreePanel(self, on_open=self._open_file)
         self.panels["editor"] = EditorPanel(self, config=self.config)
@@ -75,17 +89,22 @@ class MainWindow(tk.Tk):
         self._schedule_restore()
 
     def _save_sizes(self):
-        if self._layout_widget is None:
+        widget = self._layout_widget
+        if widget is None:
             return
         positions = []
-        for index in range(len(self._layout_widget.panes()) - 1):
+        width = widget.winfo_width()
+        for index in range(len(widget.panes()) - 1):
             try:
                 positions.append(
-                    max(MIN_PANE_WIDTH, int(self._layout_widget.sashpos(index)))
+                    max(MIN_PANE_WIDTH, int(widget.sashpos(index)))
                 )
             except tk.TclError:
                 break
-        self.config.data["panel_sizes"][self.config.data["layout"]] = positions
+        self.config.data["panel_sizes"][self.config.data["layout"]] = {
+            "width": width,
+            "sashes": positions,
+        }
 
     def _schedule_restore(self):
         self.after(50, self._restore_when_ready)
@@ -97,19 +116,53 @@ class MainWindow(tk.Tk):
         if not widget.winfo_ismapped() or widget.winfo_width() < 2:
             self._schedule_restore()
             return
-        positions = self.config.data["panel_sizes"].get(
-            self.config.data["layout"], []
+        panes = widget.panes()
+        count = len(panes)
+        if count < 2:
+            return
+        width = widget.winfo_width()
+        positions = self._resolve_positions(
+            self.config.data["panel_sizes"].get(self.config.data["layout"]),
+            width,
+            count,
         )
-        if positions:
-            for index, position in enumerate(positions):
-                if position < MIN_PANE_WIDTH:
-                    continue
-                try:
-                    widget.sashpos(index, position)
-                except tk.TclError:
-                    break
-        else:
+        if positions is None:
             self._normalize_layout(widget)
+            return
+        for index, position in enumerate(positions):
+            try:
+                widget.sashpos(index, position)
+            except tk.TclError:
+                break
+
+    def _resolve_positions(self, saved, width, count):
+        """Validate saved sash positions for the current window size.
+
+        Scales positions captured at a different window width and rejects
+        positions that would leave any pane narrower than MIN_PANE_WIDTH.
+        Returns a list of sash positions, or None if the saved positions
+        cannot be used (the caller then normalizes the layout).
+        """
+        if not saved:
+            return None
+        if isinstance(saved, dict):
+            sashes = saved.get("sashes") or []
+            saved_width = saved.get("width") or 0
+        else:
+            sashes = saved
+            saved_width = 0
+        if len(sashes) != count - 1:
+            return None
+        if saved_width > 0 and saved_width != width:
+            scale = width / saved_width
+            sashes = [int(round(pos * scale)) for pos in sashes]
+        else:
+            sashes = [int(pos) for pos in sashes]
+        bounds = [0] + sashes + [width]
+        for left, right in zip(bounds, bounds[1:]):
+            if right - left < MIN_PANE_WIDTH:
+                return None
+        return sashes
 
     def _normalize_layout(self, widget):
         panes = widget.panes()
@@ -127,17 +180,21 @@ class MainWindow(tk.Tk):
 
     def _build_menus(self):
         menubar = tk.Menu(self)
+        theme.style_menubar(menubar)
         self.configure(menu=menubar)
 
         file_menu = tk.Menu(menubar, tearoff=0)
+        theme.style_menu(file_menu)
         file_menu.add_command(label="New Markdown File...", command=self._new_file)
         file_menu.add_command(label="New Folder...", command=self._new_folder)
         file_menu.add_command(label="Save", command=self.panels["editor"].save)
         file_menu.add_separator()
         file_menu.add_command(label="Quit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
+        self.file_menu = file_menu  # Store reference
 
         workspace_menu = tk.Menu(menubar, tearoff=0)
+        theme.style_menu(workspace_menu)
         workspace_menu.add_command(
             label="Open Folder...", command=self._add_workspace
         )
@@ -150,6 +207,7 @@ class MainWindow(tk.Tk):
         self._update_workspace_menu()
 
         view_menu = tk.Menu(menubar, tearoff=0)
+        theme.style_menu(view_menu)
         for name in LAYOUTS:
             view_menu.add_radiobutton(
                 label=name,
@@ -163,6 +221,16 @@ class MainWindow(tk.Tk):
             command=self.panels["editor"].toggle_mode,
         )
         menubar.add_cascade(label="View", menu=view_menu)
+        self.view_menu = view_menu  # Store reference
+
+        theme_menu = tk.Menu(menubar, tearoff=0)
+        theme.style_menu(theme_menu)
+        theme_menu.add_command(label="Select Theme...", command=self._select_theme)
+        theme_menu.add_command(label="Edit Theme...", command=self._edit_theme)
+        menubar.add_cascade(label="Theme", menu=theme_menu)
+        self.theme_menu = theme_menu  # Store reference
+
+        self.menubar = menubar  # Store menubar reference
 
     def _update_workspace_menu(self):
         menu = self.workspace_menu
@@ -176,6 +244,47 @@ class MainWindow(tk.Tk):
                 label=label,
                 command=lambda p=path: self._activate_workspace(p),
             )
+
+    # ---- theme actions ----
+
+    def _select_theme(self):
+        ThemeSelectorDialog(self, on_theme_selected=self._apply_theme)
+
+    def _edit_theme(self):
+        from kbl.dialogs.theme_editor import ThemeEditorDialog
+        current = self.config.data.get("active_theme", "dark")
+        ThemeEditorDialog(self, theme_name=current)
+
+    def _apply_theme(self, theme_name):
+        """Apply a theme and update all panels."""
+        self.config.data["active_theme"] = theme_name
+        theme.apply(self, theme_name)
+
+        # Re-style all panels
+        self._restyle_panels()
+        self._restyle_menus()
+
+    def _restyle_panels(self):
+        """Re-apply theme styling to all panels."""
+        if "tree" in self.panels:
+            self.panels["tree"]._restyle()
+        if "editor" in self.panels:
+            self.panels["editor"]._restyle()
+        if "chat" in self.panels:
+            self.panels["chat"]._restyle()
+
+    def _restyle_menus(self):
+        """Re-apply theme styling to menus."""
+        if hasattr(self, 'menubar'):
+            theme.style_menubar(self.menubar)
+        if hasattr(self, 'file_menu'):
+            theme.style_menu(self.file_menu)
+        if hasattr(self, 'workspace_menu'):
+            theme.style_menu(self.workspace_menu)
+        if hasattr(self, 'view_menu'):
+            theme.style_menu(self.view_menu)
+        if hasattr(self, 'theme_menu'):
+            theme.style_menu(self.theme_menu)
 
     # ---- workspace actions ----
 
@@ -229,14 +338,16 @@ class WorkspaceDialog(tk.Toplevel):
         self.on_activate = on_activate
 
         self.title("Workspaces")
-        self.geometry("480x320")
+        self.geometry("520x340")
         self.transient(master)
         self.grab_set()
+        self.configure(bg=theme.PALETTE["window_bg"])
 
         frame = ttk.Frame(self, padding=8)
         frame.pack(fill="both", expand=True)
 
         self.listbox = tk.Listbox(frame)
+        theme.style_listbox(self.listbox)
         self.listbox.pack(side="left", fill="both", expand=True)
         scroll = ttk.Scrollbar(
             frame, orient="vertical", command=self.listbox.yview
