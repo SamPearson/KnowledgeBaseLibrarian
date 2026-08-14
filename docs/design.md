@@ -36,16 +36,29 @@ See [pitch.md](pitch.md) for the project pitch.
 Full files are fed into the LLM. Simplest thing to implement; we can revisit
 retrieval/chunking later if file sizes make it impractical.
 
-Two pieces of context the chat always has access to (built-ins):
+Every request has two independent parts — the **system message** (prose:
+identity, behavior, guidance) and the **tools list** (schemas the model can call).
+Between them, three things reach the model:
 
-- The markdown wiki: listing/reading the files in the tree.
-- The current date/time (the model needs to know when "tomorrow" is).
+- **Composed system prose** — agent identity + workspace instructions + tool gating.
+- **User-attached files** — files pinned with `@` in chat; injected as messages
+  with their contents, sent regardless of what the model decides.
+- **Tool results** — appended as `tool`-role messages when a tool is called.
+
+So built-in access to the wiki and the date is exposed as tools the model calls,
+not text injected every turn. Relevance is the model's job: it lists/searches,
+checks headings, then reads the files it actually needs.
 
 ## Plugins / Skills
 
 Modeled after OpenClaw skills (AgentSkills spec): a folder containing a `SKILL.md`
 with YAML frontmatter (`name`, `description`) and a markdown body of instructions,
 optionally bundled with executable code.
+
+"Built-in" just means a tool that ships with the app. Built-ins are editable and
+toggleable like any other tool — the narrow-AI guarantee is that whatever is
+enabled is all the model can reach. Tool management (folders, editor,
+enable/disable) is M4.
 
 ### The line that defines a plugin
 
@@ -61,15 +74,17 @@ optionally bundled with executable code.
 ### Contract
 
 ```
-plugins/<name>/
+<tools_root>/<name>/
   SKILL.md   # frontmatter: name + description; body: when/how to use it
   tools.py   # optional: functions, each registering a name, description, schema
 ```
 
-- At startup the app scans `plugins/`, parses each `SKILL.md`, and injects the
-  name/description into the system prompt so the model knows what exists and
+- Tool roots: built-ins ship in app code; a global root (`~/.kbl/tools/`) is
+  available in every workspace; a per-workspace root only in its own workspace.
+- At startup the app scans the tool roots, parses each `SKILL.md`, and injects
+  the name/description into the system prompt so the model knows what exists and
   when to use it (this is the "gating").
-- Tool schemas = built-ins (wiki file ops, date) + each plugin's `tools.py`,
+- Tool schemas = built-ins (wiki file ops, date, search) + each tool's `tools.py`,
   exposed to the model as callable functions. Ollama supports function calling
   natively.
 - Chat flow: user message -> model -> optional tool call -> app runs the Python
@@ -111,18 +126,24 @@ Each milestone has a design doc: [M1](milestones/M1-app-shell.md),
 - No context: the model gets only the conversation.
 - Learn the OpenAI-compatible client / prompting here.
 
-### M3 — Wiki context
+### M3 — Wiki tools & context
 
-- Built-in tools: wiki file ops (list/read) and current date/time.
-- Wire function calling so the model can pull files as context.
+- Built-in tools: `list_files`, `read_file`, `search_files`, `get_headings`,
+  `get_current_date` — editable and toggleable like any tool.
+- Wire function calling so the model can pull files as context; tool calls are
+  visible in the chat panel as they happen.
+- Request composition: agent prompt + workspace instructions + tools list.
+- `@`-mention in chat to attach a file's contents to the request.
 - Goal: "what's tomorrow's workout" works using only the wiki.
 
-### M4 — Plugin system
+### M4 — Tool management
 
-- Folder scan for `plugins/<name>/SKILL.md`.
-- Parse frontmatter, inject name/description into the system prompt.
-- Register each plugin's `tools.py` callables as tools.
-- Ship with a sample plugin (e.g. a todo API) to prove the contract.
+- Tool manager UI on the existing file tree + editor: create/edit/delete tools.
+- Global tools root (`~/.kbl/tools/`) + a per-workspace tools root.
+- Folder scan for `<tools_root>/<name>/SKILL.md` + `tools.py`.
+- Enable/disable list covering built-ins too; disabled tools vanish from the
+  prompt and schemas.
+- Ship with a sample workspace tool (e.g. a todo API) to prove the contract.
 - Built-ins stay on the same interface; this milestone is "turn on the scan."
 
 ### Deferred / not planned
