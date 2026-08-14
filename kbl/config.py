@@ -13,6 +13,10 @@ DEFAULTS = {
     "layout": "tree-editor-chat",
     "panel_sizes": {},
     "active_theme": "dark",
+    "server": "",
+    "model": "",
+    "api_key": "",
+    "active_agent": None,
 }
 
 

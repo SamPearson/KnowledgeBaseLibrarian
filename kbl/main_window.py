@@ -17,6 +17,8 @@ from kbl.panels.chat import ChatPanel
 from kbl.panels.editor import EditorPanel
 from kbl.panels.file_tree import FileTreePanel
 from kbl.workspaces import WorkspaceManager
+from kbl.dialogs.server_config import ServerConfigDialog
+from kbl.dialogs.agent_manager import AgentManagerDialog
 from kbl.dialogs.theme_selector import ThemeSelectorDialog
 
 LAYOUTS = {
@@ -63,7 +65,11 @@ class MainWindow(tk.Tk):
         self._layout_widget.pack(fill="both", expand=True)
         self.panels["tree"] = FileTreePanel(self, on_open=self._open_file)
         self.panels["editor"] = EditorPanel(self, config=self.config)
-        self.panels["chat"] = ChatPanel(self)
+        self.panels["chat"] = ChatPanel(
+            self,
+            on_configure_server=self._show_server_config,
+            on_manage_agents=self._show_agent_manager,
+        )
 
     def _open_file(self, path):
         self.panels["editor"].open(path)
@@ -230,6 +236,15 @@ class MainWindow(tk.Tk):
         menubar.add_cascade(label="Theme", menu=theme_menu)
         self.theme_menu = theme_menu  # Store reference
 
+        chat_menu = tk.Menu(menubar, tearoff=0)
+        theme.style_menu(chat_menu)
+        chat_menu.add_command(
+            label="Server Configuration...", command=self._show_server_config
+        )
+        chat_menu.add_command(label="Agents...", command=self._show_agent_manager)
+        menubar.add_cascade(label="Chat", menu=chat_menu)
+        self.chat_menu = chat_menu  # Store reference
+
         self.menubar = menubar  # Store menubar reference
 
     def _update_workspace_menu(self):
@@ -285,6 +300,8 @@ class MainWindow(tk.Tk):
             theme.style_menu(self.view_menu)
         if hasattr(self, 'theme_menu'):
             theme.style_menu(self.theme_menu)
+        if hasattr(self, 'chat_menu'):
+            theme.style_menu(self.chat_menu)
 
     # ---- workspace actions ----
 
@@ -306,6 +323,24 @@ class MainWindow(tk.Tk):
 
     def _show_workspace_dialog(self):
         WorkspaceDialog(self, self.workspaces, self._activate_workspace)
+
+    # ---- chat actions ----
+
+    def _show_server_config(self):
+        ServerConfigDialog(
+            self,
+            on_saved=self.panels["chat"]._config_saved,
+        )
+
+    def _show_agent_manager(self):
+        AgentManagerDialog(
+            self,
+            on_saved=self._after_agents_change,
+        )
+
+    def _after_agents_change(self):
+        chat = self.panels["chat"]
+        chat._refresh_agents()
 
     # ---- misc actions ----
 

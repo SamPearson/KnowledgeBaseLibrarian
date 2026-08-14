@@ -21,12 +21,15 @@ See [pitch.md](pitch.md) for the project pitch.
 - The user manages a list of workspace paths (add/remove) and one active
   workspace; the file tree mirrors the active workspace's directory.
 
-## Model provider
+## Server configuration
 
-- A model provider configuration dialog.
-- Chat happens in the chat panel.
-- Client targets Ollama (local). We'll spend time learning to prompt Ollama and
-  building a client; go as simple as possible first.
+- A server configuration dialog. The user enters a single server URL covering
+  protocol, host, port, and any path suffix in one field, e.g.
+  `http://localhost:11434/v1` (Ollama) or `http://localhost:8080/v1`
+  (llama.cpp server).
+- Both Ollama and llama.cpp expose the OpenAI-compatible API at `<host>/v1`, so
+  one client handles both servers.
+- Chat happens in the chat panel. Go as simple as possible first.
 
 ## Context strategy
 
@@ -103,10 +106,10 @@ Each milestone has a design doc: [M1](milestones/M1-app-shell.md),
 
 ### M2 — Chat, no context
 
-- Model provider configuration dialog.
+- Server configuration dialog.
 - Chat panel wired up: send messages, see replies.
 - No context: the model gets only the conversation.
-- Learn the Ollama client / prompting here.
+- Learn the OpenAI-compatible client / prompting here.
 
 ### M3 — Wiki context
 
