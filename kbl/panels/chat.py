@@ -1,18 +1,25 @@
 """Chat panel: conversation history, input, send/stop, streaming replies."""
 
+import json
 import queue
+import re
 import threading
 import tkinter as tk
+from pathlib import Path
 
 try:
     import ttkbootstrap as ttk
 except ImportError:
     from tkinter import ttk
 
-from kbl import agents, theme
+from kbl import agents, context, theme, tools as kbl_tools
 from kbl.chat_client import ServerError, chat_stream, fetch_models
 
 _MANAGE_AGENTS_LABEL = "Manage agents..."
+_MAX_TOOL_ITERATIONS = 8
+_ATTACH_RE = re.compile(r"@([^\s,.;:!?\"'()\[\]{}<>]+)")
+_TOOL_PREVIEW_LIMIT = 160
+_SUGGESTION_LIMIT = 30
 
 
 class ChatPanel(ttk.Frame):
@@ -32,6 +39,10 @@ class ChatPanel(ttk.Frame):
         self._thought_blocks = []
         self._thought_seq = 0
         self._progress_done = False
+        self._suggest_popup = None
+        self._suggest_list = None
+        self._suggest_token_start = None
+        self._suggest_binding = None
 
         self._build()
         self._restyle()
@@ -91,6 +102,10 @@ class ChatPanel(ttk.Frame):
 
         self.input.bind("<Return>", self._on_return)
         self.input.bind("<Shift-Return>", lambda e: None)
+        self.input.bind("<KeyRelease>", self._maybe_show_suggestions)
+        self.input.bind("<Down>", self._on_suggest_down)
+        self.input.bind("<Up>", self._on_suggest_up)
+        self.input.bind("<Escape>", self._close_suggestions)
 
     def _restyle(self):
         theme.style_text(self.history)
@@ -103,6 +118,16 @@ class ChatPanel(ttk.Frame):
             "think",
             foreground=theme.PALETTE.get("chrome_text_dim", theme.PALETTE["chrome_text"]),
             font=(theme.FAMILY, theme.SIZE, "italic"),
+        )
+        self.history.tag_configure(
+            "tool",
+            foreground=theme.PALETTE.get("accent", theme.PALETTE["chrome_text"]),
+            font=(theme.MONO_FAMILY, theme.SIZE),
+        )
+        self.history.tag_configure(
+            "tool_res",
+            foreground=theme.PALETTE.get("chrome_text_dim", theme.PALETTE["chrome_text"]),
+            font=(theme.MONO_FAMILY, theme.SIZE - 1),
         )
         self._refresh_status()
 
@@ -206,6 +231,9 @@ class ChatPanel(ttk.Frame):
     # ---- actions ----
 
     def _on_return(self, event):
+        if self._suggest_popup:
+            self._complete_suggestion()
+            return "break"
         if event.state & 0x0001:
             self.input.insert("insert", "\n")
         else:
@@ -229,9 +257,48 @@ class ChatPanel(ttk.Frame):
             return
         self.input.delete("1.0", "end")
 
+        for attached in self._attached_messages(text):
+            self.conversation.append(attached)
         self.conversation.append({"role": "user", "content": text})
         self._append("User", text)
         self._start_stream(server, model)
+
+    def _active_workspace(self):
+        try:
+            workspace = self.master.workspaces.active
+        except AttributeError:
+            return None
+        return str(workspace) if workspace else None
+
+    def _attached_messages(self, text):
+        workspace = self._active_workspace()
+        if not workspace:
+            return []
+        base = Path(workspace)
+        attached = []
+        seen = []
+        for token in _ATTACH_RE.findall(text):
+            token = token.rstrip(".,;:!?")
+            if not token or token in seen:
+                continue
+            target = (base / token).resolve()
+            if target != base and base not in target.parents:
+                continue
+            if not target.is_file():
+                continue
+            seen.append(token)
+            try:
+                contents = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            attached.append(
+                {
+                    "role": "user",
+                    "content": f"[Attached file: {token}]\n\n{contents}",
+                }
+            )
+            self._append("Attached", token)
+        return attached
 
     def _start_stream(self, server, model):
         api_key = (self.master.config.data.get("api_key") or "").strip()
@@ -259,21 +326,97 @@ class ChatPanel(ttk.Frame):
         self._drain_queue()
 
     def _stream_worker(self, server, model, api_key):
-        system_prompt = agents.get_prompt(agents.active_agent(self.master.config))
+        workspace = self._active_workspace()
+        tool_list = kbl_tools.builtin_tools(workspace) if workspace else []
+        system_prompt = context.compose_system(
+            agents.get_prompt(agents.active_agent(self.master.config)),
+            context.workspace_instructions(workspace),
+            tool_list,
+        )
         messages = [{"role": "system", "content": system_prompt}] + list(
             self.conversation
         )
+        tool_messages = []
         content_parts = []
+        call_seq = 0
         try:
-            for kind, piece in chat_stream(
-                server, model, messages, api_key, self._stop_event
-            ):
-                if kind == "content":
-                    content_parts.append(piece)
-                self._request_queue.put((kind, piece))
-            self._request_queue.put(("done", "".join(content_parts)))
+            for _round in range(_MAX_TOOL_ITERATIONS):
+                calls = None
+                for kind, piece in chat_stream(
+                    server,
+                    model,
+                    messages + tool_messages,
+                    api_key,
+                    self._stop_event,
+                    tools=tool_list,
+                ):
+                    if kind == "tool_calls":
+                        calls = piece
+                        continue
+                    if kind == "content":
+                        content_parts.append(piece)
+                    self._request_queue.put((kind, piece))
+                if calls is None:
+                    break
+                if self._stop_event is not None and self._stop_event.is_set():
+                    break
+                normalized = []
+                for call in calls:
+                    normalized.append(self._normalize_call(call, call_seq))
+                    call_seq += 1
+                tool_messages.append(self._assistant_tool_message(normalized))
+                for call in normalized:
+                    result = kbl_tools.run_tool(
+                        tool_list, call["name"], call["arguments"]
+                    )
+                    self._request_queue.put(("tool_call", call))
+                    self._request_queue.put(("tool_result", (call, result)))
+                    tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": result,
+                        }
+                    )
+            else:
+                self._request_queue.put(
+                    ("error", f"Stopped after {_MAX_TOOL_ITERATIONS} tool rounds.")
+                )
+                return
+            final_text = "".join(content_parts)
+            if self._stop_event is None or not self._stop_event.is_set():
+                self.conversation.extend(tool_messages)
+                if final_text:
+                    self.conversation.append(
+                        {"role": "assistant", "content": final_text}
+                    )
+            self._request_queue.put(("done", final_text))
         except Exception as exc:
             self._request_queue.put(("error", str(exc)))
+
+    def _normalize_call(self, call, seq):
+        return {
+            "id": call.get("id") or f"call_{seq}",
+            "name": call.get("name") or "",
+            "arguments": call.get("arguments") or "{}",
+        }
+
+    def _assistant_tool_message(self, calls):
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                    },
+                }
+                for call in calls
+            ],
+        }
 
     # ---- queue draining (UI thread) ----
 
@@ -287,6 +430,10 @@ class ChatPanel(ttk.Frame):
                 self._append_thinking(value)
             elif kind == "content":
                 self._append_stream(value)
+            elif kind == "tool_call":
+                self._render_tool_call(value)
+            elif kind == "tool_result":
+                self._render_tool_result(value)
             elif kind == "done":
                 self._finish_stream(value)
             elif kind == "error":
@@ -365,8 +512,6 @@ class ChatPanel(ttk.Frame):
         self.send_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self._stop_progress()
-        if not error and assistant_text:
-            self.conversation.append({"role": "assistant", "content": assistant_text})
         self.history.configure(state="normal")
         self.history.insert("end", "\n")
         self.history.see("end")
@@ -391,3 +536,170 @@ class ChatPanel(ttk.Frame):
             self.history.insert("end", text)
         self.history.see("end")
         self.history.configure(state="disabled")
+
+    # ---- tool call rendering ----
+
+    def _render_tool_call(self, call):
+        self._stop_progress()
+        name = call.get("name") or "?"
+        try:
+            args = json.loads(call.get("arguments") or "{}")
+        except (ValueError, TypeError):
+            args = None
+        if isinstance(args, dict) and args:
+            shown = ", ".join(f"{k}={v!r}" for k, v in args.items())
+        else:
+            shown = ""
+        self.history.configure(state="normal")
+        self.history.insert("end", f"\n  \u2192 {name}({shown})", "tool")
+        self.history.see("end")
+        self.history.configure(state="disabled")
+
+    def _render_tool_result(self, call_result):
+        _call, result = call_result
+        preview = " ".join((result or "").split())
+        if len(preview) > _TOOL_PREVIEW_LIMIT:
+            preview = preview[:_TOOL_PREVIEW_LIMIT] + "\u2026"
+        if not preview:
+            return
+        self.history.configure(state="normal")
+        self.history.insert("end", f"\n    {preview}", "tool_res")
+        self.history.see("end")
+        self.history.configure(state="disabled")
+
+    # ---- @-mention file suggestions ----
+
+    def _suggestion_token(self):
+        insert = self.input.index("insert")
+        line = insert.split(".")[0]
+        line_text = self.input.get(f"{line}.0", "insert")
+        idx = line_text.rfind("@")
+        if idx < 0:
+            return None, None, None
+        return line_text[idx + 1 :], f"{line}.{idx}", insert
+
+    def _maybe_show_suggestions(self, event=None):
+        if self._streaming:
+            self._close_suggestions()
+            return
+        workspace = self._active_workspace()
+        if not workspace:
+            self._close_suggestions()
+            return
+        token, start, _insert = self._suggestion_token()
+        if token is None or " " in token:
+            self._close_suggestions()
+            return
+        try:
+            files = kbl_tools.list_md_files(workspace)
+        except Exception:
+            self._close_suggestions()
+            return
+        lower = token.lower()
+        items = [
+            f for f in files if f.lower().startswith(lower)
+        ][:_SUGGESTION_LIMIT]
+        if not items:
+            self._close_suggestions()
+            return
+        self._show_suggestions(items, start)
+
+    def _show_suggestions(self, items, token_start):
+        self._close_suggestions()
+        top = tk.Toplevel(self)
+        top.withdraw()
+        top.overrideredirect(True)
+        listbox = tk.Listbox(
+            top,
+            exportselection=False,
+            activestyle="dotbox",
+            height=min(len(items), 8),
+            width=max((len(i) for i in items), default=20) + 2,
+        )
+        theme.style_listbox(listbox)
+        listbox.pack(fill="both", expand=True)
+        for item in items:
+            listbox.insert("end", item)
+        listbox.selection_set(0)
+        listbox.activate(0)
+        listbox.bind("<ButtonRelease-1>", lambda e: self._complete_suggestion())
+        listbox.bind("<Double-Button-1>", lambda e: self._complete_suggestion())
+        self._suggest_popup = top
+        self._suggest_list = listbox
+        self._suggest_token_start = token_start
+        self._suggest_binding = self.bind_all("<Button-1>", self._on_popup_click)
+        try:
+            x, y, _w, h = self.input.bbox("insert")
+        except tk.TclError:
+            x, y, _w, h = 0, 0, 0, 0
+        top.geometry(
+            f"+{self.input.winfo_rootx() + x}"
+            f"+{self.input.winfo_rooty() + y + h}"
+        )
+        top.deiconify()
+        top.lift()
+
+    def _on_popup_click(self, event):
+        if self._suggest_popup is None:
+            return
+        widget = event.widget
+        while widget is not None:
+            if widget is self._suggest_popup:
+                return
+            widget = widget.master
+        self._close_suggestions()
+
+    def _complete_suggestion(self):
+        if self._suggest_popup is None:
+            return
+        selection = self._suggest_list.curselection()
+        if not selection:
+            self._close_suggestions()
+            return
+        path = self._suggest_list.get(selection[0])
+        start = self._suggest_token_start
+        self.input.delete(start, "insert")
+        self.input.insert(start, path)
+        self._close_suggestions()
+
+    def _close_suggestions(self, _event=None):
+        if self._suggest_popup is not None:
+            try:
+                self._suggest_popup.destroy()
+            except tk.TclError:
+                pass
+        if self._suggest_binding is not None:
+            try:
+                self.unbind_all(self._suggest_binding)
+            except tk.TclError:
+                pass
+        self._suggest_popup = None
+        self._suggest_list = None
+        self._suggest_token_start = None
+        self._suggest_binding = None
+
+    def _on_suggest_down(self, _event=None):
+        if self._suggest_popup is None:
+            return None
+        listbox = self._suggest_list
+        selection = listbox.curselection()
+        index = selection[0] if selection else 0
+        if index < listbox.size() - 1:
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(index + 1)
+            listbox.activate(index + 1)
+            listbox.see(index + 1)
+        return "break"
+
+    def _on_suggest_up(self, _event=None):
+        if self._suggest_popup is None:
+            return None
+        listbox = self._suggest_list
+        selection = listbox.curselection()
+        index = selection[0] if selection else 0
+        if index > 0:
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(index - 1)
+            listbox.activate(index - 1)
+            listbox.see(index - 1)
+        return "break"
