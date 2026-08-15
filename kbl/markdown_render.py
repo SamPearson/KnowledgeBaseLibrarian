@@ -19,12 +19,34 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
 def md_to_html(text):
+    """Convert markdown to HTML with theme colors applied inline.
+
+    tkhtmlview's parser ignores the widget's foreground and does not
+    support ``<style>`` blocks, so the theme palette is baked into the
+    markup as inline styles.
+    """
     if _markdown is None:
         return None
-    return _markdown.markdown(
+    html = _markdown.markdown(
         text or "",
         extensions=["fenced_code", "tables", "sane_lists"],
     )
+    return _style_html(html)
+
+
+def _style_html(html):
+    p = theme.PALETTE
+    html = f'<div style="color: {p["ink"]}">{html}</div>'
+    accent = f'style="color: {p["accent"]}" '
+    code = (
+        f'style="background-color: {p["slate_alt"]}; '
+        f'color: {p["chrome_text"]}"'
+    )
+    html = re.sub(r"<h([1-6])>", rf"<h\1 {accent}>", html)
+    html = re.sub("<a href=", f"<a {accent}href=", html)
+    html = re.sub("<pre>", f"<pre {code}>", html)
+    html = re.sub("<code>", f"<code {code}>", html)
+    return html
 
 
 def _setup_tags(widget):
