@@ -17,6 +17,7 @@ DEFAULTS = {
     "model": "",
     "api_key": "",
     "active_agent": None,
+    "disabled_tools": [],
 }
 
 

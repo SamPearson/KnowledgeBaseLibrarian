@@ -20,6 +20,7 @@ from kbl.workspaces import WorkspaceManager
 from kbl.dialogs.server_config import ServerConfigDialog
 from kbl.dialogs.agent_manager import AgentManagerDialog
 from kbl.dialogs.theme_selector import ThemeSelectorDialog
+from kbl.dialogs.tool_manager import ToolManagerDialog
 
 LAYOUTS = {
     "tree-editor-chat": ("tree", "editor", "chat"),
@@ -242,6 +243,7 @@ class MainWindow(tk.Tk):
             label="Server Configuration...", command=self._show_server_config
         )
         chat_menu.add_command(label="Agents...", command=self._show_agent_manager)
+        chat_menu.add_command(label="Tools...", command=self._show_tool_manager)
         menubar.add_cascade(label="Chat", menu=chat_menu)
         self.chat_menu = chat_menu  # Store reference
 
@@ -339,6 +341,16 @@ class MainWindow(tk.Tk):
         )
 
     def _after_agents_change(self):
+        chat = self.panels["chat"]
+        chat._refresh_agents()
+
+    def _show_tool_manager(self):
+        ToolManagerDialog(
+            self,
+            on_saved=self._after_tools_change,
+        )
+
+    def _after_tools_change(self):
         chat = self.panels["chat"]
         chat._refresh_agents()
 

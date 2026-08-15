@@ -17,6 +17,14 @@ _SEARCH_RESULT_LIMIT = 50
 _SNIPPET_LIMIT = 200
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 
+# User tool folders live in a top-level "tools" directory; they must not
+# pollute the wiki's listing, search, or @-mention suggestions.
+_TOOLS_ROOT_NAME = "tools"
+
+
+def _is_tool_path(rel):
+    return rel.parts and rel.parts[0] == _TOOLS_ROOT_NAME
+
 
 @dataclass
 class Tool:
@@ -54,7 +62,10 @@ def list_md_files(workspace):
     return sorted(
         str(p.relative_to(base))
         for p in base.rglob("*")
-        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() == ".md"
+        if p.is_file()
+        and not p.name.startswith(".")
+        and p.suffix.lower() == ".md"
+        and not _is_tool_path(p.relative_to(base))
     )
 
 
@@ -65,6 +76,8 @@ def _list_files(workspace):
     lines = []
     for child in sorted(base.iterdir(), key=lambda p: p.name.lower()):
         if child.name.startswith("."):
+            continue
+        if _is_tool_path(Path(child.name)):
             continue
         rel = child.relative_to(base)
         if child.is_dir():
@@ -97,6 +110,9 @@ def _search_files(workspace, query):
     matches = []
     for path in base.rglob("*.md"):
         if path.name.startswith("."):
+            continue
+        rel = path.relative_to(base)
+        if _is_tool_path(rel):
             continue
         try:
             text = path.read_text(encoding="utf-8")

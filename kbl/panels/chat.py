@@ -12,7 +12,7 @@ try:
 except ImportError:
     from tkinter import ttk
 
-from kbl import agents, context, theme, tools as kbl_tools
+from kbl import agents, context, theme, tools as kbl_tools, toolstore
 from kbl.chat_client import ServerError, chat_stream, fetch_models
 
 _MANAGE_AGENTS_LABEL = "Manage agents..."
@@ -327,11 +327,13 @@ class ChatPanel(ttk.Frame):
 
     def _stream_worker(self, server, model, api_key):
         workspace = self._active_workspace()
-        tool_list = kbl_tools.builtin_tools(workspace) if workspace else []
+        collection = toolstore.collect_tools(workspace, self.master.config)
+        tool_list = list(collection.enabled_tools)
         system_prompt = context.compose_system(
             agents.get_prompt(agents.active_agent(self.master.config)),
             context.workspace_instructions(workspace),
             tool_list,
+            skills=collection.skills,
         )
         messages = [{"role": "system", "content": system_prompt}] + list(
             self.conversation
