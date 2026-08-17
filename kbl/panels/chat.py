@@ -28,6 +28,9 @@ class ChatPanel(ttk.Frame):
         self.on_configure_server = on_configure_server
         self.on_manage_agents = on_manage_agents
         self.conversation = []
+        self._assistant_blocks = []
+        self._content_start_mark = None
+        self._msg_seq = 0
         self._request_queue = queue.Queue()
         self._model_queue = queue.Queue()
         self._model_poll_active = False
@@ -85,6 +88,7 @@ class ChatPanel(ttk.Frame):
         self.history = tk.Text(self, wrap="word", state="disabled")
         self.history.pack(fill="both", expand=True, padx=4, pady=(4, 0))
         theme.style_text(self.history)
+        self.history.bind("<Button-3>", self._show_history_menu)
 
         entry_row = ttk.Frame(self)
         entry_row.pack(fill="x", padx=4, pady=4)
@@ -307,6 +311,7 @@ class ChatPanel(ttk.Frame):
         self._thinking_start = None
         self._thinking_collapsed = False
         self._progress_done = False
+        self._content_start_mark = None
         self._stop_event = threading.Event()
         self.send_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
@@ -459,6 +464,11 @@ class ChatPanel(ttk.Frame):
         if not self._thinking_collapsed and self._thinking_text:
             self._collapse_thinking()
         self.history.configure(state="normal")
+        if self._content_start_mark is None:
+            self._msg_seq += 1
+            self._content_start_mark = f"_a{self._msg_seq}_s"
+            self.history.mark_set(self._content_start_mark, "end-1c")
+            self.history.mark_gravity(self._content_start_mark, "left")
         self.history.insert("end", piece)
         self.history.see("end")
         self.history.configure(state="disabled")
@@ -515,6 +525,22 @@ class ChatPanel(ttk.Frame):
         self.stop_button.configure(state="disabled")
         self._stop_progress()
         self.history.configure(state="normal")
+        if (
+            self._content_start_mark is not None
+            and self.conversation
+            and self.conversation[-1].get("role") == "assistant"
+            and self.conversation[-1].get("content")
+        ):
+            end_mark = f"_a{self._msg_seq}_e"
+            self.history.mark_set(end_mark, "end-1c")
+            self.history.mark_gravity(end_mark, "right")
+            self._assistant_blocks.append(
+                {
+                    "conv_index": len(self.conversation) - 1,
+                    "start_mark": self._content_start_mark,
+                    "end_mark": end_mark,
+                }
+            )
         self.history.insert("end", "\n")
         self.history.see("end")
         self.history.configure(state="disabled")
@@ -538,6 +564,76 @@ class ChatPanel(ttk.Frame):
             self.history.insert("end", text)
         self.history.see("end")
         self.history.configure(state="disabled")
+
+    # ---- assistant message editing ----
+
+    def _show_history_menu(self, event):
+        if self._streaming:
+            return
+        block = self._block_at_index(self.history.index(f"@{event.x},{event.y}"))
+        if block is None:
+            return
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="Edit assistant message",
+            command=lambda b=block: self._edit_message(b),
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _block_at_index(self, index):
+        for block in self._assistant_blocks:
+            if self.history.compare(
+                index, ">=", block["start_mark"]
+            ) and self.history.compare(index, "<=", block["end_mark"]):
+                return block
+        return None
+
+    def _edit_message(self, block):
+        if self._streaming or block["conv_index"] >= len(self.conversation):
+            return
+        current = self.conversation[block["conv_index"]].get("content") or ""
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Edit assistant message")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        text = tk.Text(dialog, wrap="word", width=70, height=20)
+        theme.style_text(text)
+        text.pack(fill="both", expand=True, padx=8, pady=8)
+        text.insert("1.0", current)
+        text.focus_set()
+        text.tag_add("sel", "1.0", "end-1c")
+
+        row = ttk.Frame(dialog)
+        row.pack(fill="x", padx=8, pady=(0, 8))
+
+        def _save():
+            new = text.get("1.0", "end-1c")
+            self.conversation[block["conv_index"]]["content"] = new
+            self.history.configure(state="normal")
+            self.history.delete(block["start_mark"], block["end_mark"])
+            self.history.insert(block["start_mark"], new)
+            self.history.mark_set(
+                block["end_mark"], f"{block['start_mark']} + {len(new)}c"
+            )
+            self.history.see(block["start_mark"])
+            self.history.configure(state="disabled")
+            dialog.destroy()
+
+        def _cancel():
+            dialog.destroy()
+
+        ttk.Button(row, text="Cancel", command=_cancel).pack(
+            side="right", padx=(4, 0)
+        )
+        ttk.Button(
+            row, text="Save", style="Accent.TButton", command=_save
+        ).pack(side="right")
+        dialog.bind("<Escape>", lambda e: _cancel())
 
     # ---- tool call rendering ----
 
