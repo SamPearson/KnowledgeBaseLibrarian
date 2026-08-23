@@ -18,6 +18,7 @@ DEFAULTS = {
     "api_key": "",
     "active_agent": None,
     "disabled_tools": [],
+    "active_conversation": {},
 }
 
 
@@ -50,6 +51,14 @@ class Config:
         if isinstance(self.data.get("active_theme"), str):
             # Strip accidental whitespace from persisted theme names.
             self.data["active_theme"] = self.data["active_theme"].strip()
+        if isinstance(self.data.get("active_conversation"), str):
+            # Migrate the legacy single conversation id to a per-workspace map.
+            from kbl.conversations import workspace_id_for
+
+            conv_id = self.data["active_conversation"]
+            self.data["active_conversation"] = {
+                workspace_id_for(self.data.get("active_workspace")): conv_id
+            }
         return self.data
 
     def save(self):

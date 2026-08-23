@@ -319,8 +319,10 @@ class MainWindow(tk.Tk):
         self._activate_workspace(path)
 
     def _activate_workspace(self, path):
+        self.panels["chat"].persist()
         self.workspaces.set_active(path)
         self.panels["tree"].set_workspace(path)
+        self.panels["chat"]._on_workspace_changed()
         self._update_workspace_menu()
 
     def _show_workspace_dialog(self):
@@ -374,6 +376,7 @@ class MainWindow(tk.Tk):
 
     def _on_close(self):
         self._save_sizes()
+        self.panels["chat"].persist()
         self.config.save()
         self.destroy()
 

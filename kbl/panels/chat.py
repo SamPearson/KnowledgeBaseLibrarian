@@ -6,6 +6,7 @@ import re
 import threading
 import tkinter as tk
 from pathlib import Path
+from tkinter import messagebox, simpledialog
 
 try:
     import ttkbootstrap as ttk
@@ -14,6 +15,7 @@ except ImportError:
 
 from kbl import agents, context, theme, tools as kbl_tools, toolstore
 from kbl.chat_client import ServerError, chat_stream, fetch_models
+from kbl.conversations import ConversationStore, workspace_id_for
 
 _MANAGE_AGENTS_LABEL = "Manage agents..."
 _MAX_TOOL_ITERATIONS = 8
@@ -28,6 +30,9 @@ class ChatPanel(ttk.Frame):
         self.on_configure_server = on_configure_server
         self.on_manage_agents = on_manage_agents
         self.conversation = []
+        self._store = ConversationStore()
+        self._conv_id = None
+        self._conv_name = self._default_conversation_name()
         self._assistant_blocks = []
         self._content_start_mark = None
         self._msg_seq = 0
@@ -51,6 +56,7 @@ class ChatPanel(ttk.Frame):
         self._restyle()
         self._refresh_agents()
         self._refresh_models()
+        self._restore_conversation()
 
     # ---- UI ----
 
@@ -81,6 +87,20 @@ class ChatPanel(ttk.Frame):
         )
         self.agent_combo.pack(side="left", padx=(0, 8), pady=4)
         self.agent_combo.bind("<<ComboboxSelected>>", self._on_agent_selected)
+        self.conv_var = tk.StringVar()
+        self.conv_combo = ttk.Combobox(
+            combo_row, textvariable=self.conv_var, state="readonly", width=28
+        )
+        self.conv_combo.pack(side="left", padx=(0, 8), pady=4)
+        self.conv_combo.bind("<<ComboboxSelected>>", self._on_conv_selected)
+        self.new_conv_btn = ttk.Button(
+            combo_row, text="New", width=5, command=self._new_conversation
+        )
+        self.new_conv_btn.pack(side="left", padx=(0, 4), pady=4)
+        self.rename_conv_btn = ttk.Button(
+            combo_row, text="Rename", width=8, command=self._rename_conversation
+        )
+        self.rename_conv_btn.pack(side="left", padx=(0, 8), pady=4)
         self.progress = ttk.Progressbar(
             combo_row, mode="indeterminate", length=140, maximum=1.0
         )
@@ -265,6 +285,8 @@ class ChatPanel(ttk.Frame):
             self.conversation.append(attached)
         self.conversation.append({"role": "user", "content": text})
         self._append("User", text)
+        self.persist()
+        self._refresh_convs()
         self._start_stream(server, model)
 
     def _active_workspace(self):
@@ -273,6 +295,9 @@ class ChatPanel(ttk.Frame):
         except AttributeError:
             return None
         return str(workspace) if workspace else None
+
+    def _current_workspace_id(self):
+        return workspace_id_for(self._active_workspace())
 
     def _attached_messages(self, text):
         workspace = self._active_workspace()
@@ -544,6 +569,8 @@ class ChatPanel(ttk.Frame):
         self.history.insert("end", "\n")
         self.history.see("end")
         self.history.configure(state="disabled")
+        self.persist()
+        self._refresh_convs()
 
     def _stop(self):
         if self._stop_event:
@@ -614,6 +641,7 @@ class ChatPanel(ttk.Frame):
         def _save():
             new = text.get("1.0", "end-1c")
             self.conversation[block["conv_index"]]["content"] = new
+            self.persist()
             self.history.configure(state="normal")
             self.history.delete(block["start_mark"], block["end_mark"])
             self.history.insert(block["start_mark"], new)
@@ -634,6 +662,188 @@ class ChatPanel(ttk.Frame):
             row, text="Save", style="Accent.TButton", command=_save
         ).pack(side="right")
         dialog.bind("<Escape>", lambda e: _cancel())
+
+    # ---- conversation store ----
+
+    def _default_conversation_name(self):
+        existing = {
+            c["name"]
+            for c in self._store.list_conversations(self._current_workspace_id())
+        }
+        n = 1
+        while f"Conversation {n}" in existing:
+            n += 1
+        return f"Conversation {n}"
+
+    def _refresh_convs(self):
+        values = [
+            c["name"]
+            for c in self._store.list_conversations(self._current_workspace_id())
+        ]
+        self.conv_combo["values"] = values
+        state = "normal" if self._conv_id is not None else "disabled"
+        self.rename_conv_btn.configure(state=state)
+        self.conv_var.set(self._conv_name)
+
+    def _restore_conversation(self):
+        self._refresh_convs()
+        workspace_id = self._current_workspace_id()
+        active = self.master.config.data.get("active_conversation") or {}
+        active_id = (active.get(workspace_id) or "").strip()
+        if not active_id:
+            return
+        data = self._store.load(active_id, workspace_id)
+        if data is None:
+            return
+        self.conversation = data.get("messages") or []
+        self._conv_id = data["id"]
+        self._conv_name = data.get("name") or data["id"]
+        self._render_history()
+        self._refresh_convs()
+
+    def _on_conv_selected(self, _event=None):
+        name = self.conv_var.get()
+        if not name:
+            return
+        workspace_id = self._current_workspace_id()
+        conv = self._store.find_by_name(name, workspace_id)
+        if conv is None or conv["id"] == self._conv_id:
+            self._refresh_convs()
+            return
+        if self._streaming:
+            self._stop()
+            self._refresh_convs()
+            return
+        self.persist()
+        data = self._store.load(conv["id"], workspace_id)
+        if data is None:
+            self._refresh_convs()
+            return
+        self.conversation = data.get("messages") or []
+        self._conv_id = data["id"]
+        self._conv_name = data.get("name") or data["id"]
+        self._render_history()
+        self._refresh_convs()
+        self._update_active_conversation()
+
+    def _new_conversation(self):
+        if self._streaming:
+            self._stop()
+            self._refresh_convs()
+            return
+        self.persist()
+        self.conversation = []
+        self._conv_id = None
+        self._conv_name = self._default_conversation_name()
+        self._render_history()
+        self._refresh_convs()
+        self._update_active_conversation()
+
+    def _on_workspace_changed(self):
+        if self._streaming:
+            self._stop()
+            self._refresh_convs()
+            return
+        self.conversation = []
+        self._conv_id = None
+        self._conv_name = self._default_conversation_name()
+        self._render_history()
+        self._refresh_convs()
+        self._restore_conversation()
+
+    def _rename_conversation(self):
+        if self._conv_id is None:
+            return
+        name = simpledialog.askstring(
+            "Rename conversation",
+            "Name:",
+            initialvalue=self._conv_name,
+            parent=self,
+        )
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        if name == self._conv_name:
+            return
+        workspace_id = self._current_workspace_id()
+        if self._store.name_exists(name, workspace_id):
+            messagebox.showwarning(
+                "Rename conversation",
+                f'A conversation named "{name}" already exists.',
+                parent=self,
+            )
+            return
+        self._conv_name = name
+        self._store.rename(self._conv_id, name, workspace_id)
+        self._refresh_convs()
+
+    def _update_active_conversation(self):
+        config = self.master.config
+        active = config.data.get("active_conversation")
+        if not isinstance(active, dict):
+            active = {}
+            config.data["active_conversation"] = active
+        active[self._current_workspace_id()] = self._conv_id
+        config.save()
+
+    def persist(self):
+        if not self.conversation and self._conv_id is None:
+            return
+        conversation = {
+            "id": self._conv_id,
+            "name": self._conv_name,
+            "messages": self.conversation,
+        }
+        self._conv_id = self._store.save(
+            conversation, self._current_workspace_id()
+        )
+        self._update_active_conversation()
+
+    def _render_history(self):
+        self.history.configure(state="normal")
+        self.history.delete("1.0", "end")
+        self.history.configure(state="disabled")
+        self._assistant_blocks = []
+        self._thought_blocks = []
+        self._thinking_text = []
+        self._thinking_start = None
+        self._thinking_collapsed = False
+        self._content_start_mark = None
+        self._msg_seq = 0
+        self._thought_seq = 0
+        for index, message in enumerate(self.conversation):
+            role = message.get("role")
+            content = message.get("content")
+            if role == "user":
+                match = re.match(r"^\[Attached file: ([^\]]+)\]", content or "")
+                if match:
+                    self._append("Attached", match.group(1))
+                elif content:
+                    self._append("User", content)
+            elif role == "assistant" and isinstance(content, str) and content:
+                self._render_assistant(index, content)
+
+    def _render_assistant(self, conv_index, content):
+        self.history.configure(state="normal")
+        self.history.insert("end", "\nAssistant: ")
+        start = self.history.index("end-1c")
+        self._msg_seq += 1
+        start_mark = f"_a{self._msg_seq}_s"
+        self.history.mark_set(start_mark, start)
+        self.history.mark_gravity(start_mark, "left")
+        self.history.insert("end", content)
+        end_mark = f"_a{self._msg_seq}_e"
+        self.history.mark_set(end_mark, "end-1c")
+        self.history.mark_gravity(end_mark, "right")
+        self.history.see("end")
+        self.history.configure(state="disabled")
+        self._assistant_blocks.append(
+            {
+                "conv_index": conv_index,
+                "start_mark": start_mark,
+                "end_mark": end_mark,
+            }
+        )
 
     # ---- tool call rendering ----
 
