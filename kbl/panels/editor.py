@@ -10,11 +10,6 @@ except ImportError:
 
 from kbl import markdown_render, theme
 
-try:
-    from tkhtmlview import HTMLLabel
-except ImportError:  # pragma: no cover
-    HTMLLabel = None
-
 
 class EditorPanel(ttk.Frame):
     def __init__(self, master, config):
@@ -56,7 +51,6 @@ class EditorPanel(ttk.Frame):
         scroll.pack(side="right", fill="y")
 
         self.display_frame = ttk.Frame(body)
-        self._html_label = None
         self._fallback_text = None
 
         self._show_edit()
@@ -71,35 +65,29 @@ class EditorPanel(ttk.Frame):
 
     def _show_display(self):
         self.edit_frame.pack_forget()
-        if HTMLLabel is not None:
-            if self._html_label is None:
-                self._html_label = HTMLLabel(self.display_frame, html="")
-                theme.style_text(self._html_label)
-                self._html_label.pack(fill="both", expand=True)
-        elif self._fallback_text is None:
+        if self._fallback_text is None:
             self._fallback_text = tk.Text(
-                self.display_frame, wrap="word", state="disabled"
+                self.display_frame, wrap="none", state="disabled"
             )
             theme.style_text(self._fallback_text)
-            fallback_scroll = ttk.Scrollbar(
+            v_scroll = ttk.Scrollbar(
                 self.display_frame, orient="vertical",
                 command=self._fallback_text.yview,
             )
-            self._fallback_text.configure(
-                yscrollcommand=fallback_scroll.set
+            self._fallback_text.configure(yscrollcommand=v_scroll.set)
+            h_scroll = ttk.Scrollbar(
+                self.display_frame, orient="horizontal",
+                command=self._fallback_text.xview,
             )
+            self._fallback_text.configure(xscrollcommand=h_scroll.set)
             self._fallback_text.pack(side="left", fill="both", expand=True)
-            fallback_scroll.pack(side="right", fill="y")
+            v_scroll.pack(side="right", fill="y")
+            h_scroll.pack(side="bottom", fill="x")
         self.display_frame.pack(fill="both", expand=True)
         self._refresh_display()
 
     def _refresh_display(self):
         content = self.text.get("1.0", "end-1c")
-        if self._html_label is not None:
-            html = markdown_render.md_to_html(content)
-            if html is not None:
-                self._html_label.set_html(html)
-                return
         if self._fallback_text is not None:
             markdown_render.render_md_in_text(self._fallback_text, content)
 
@@ -157,8 +145,6 @@ class EditorPanel(ttk.Frame):
     def _restyle(self):
         """Re-apply theme styling."""
         theme.style_text(self.text)
-        if self._html_label is not None:
-            theme.style_text(self._html_label)
         if self._fallback_text is not None:
             theme.style_text(self._fallback_text)
             self._refresh_display()
