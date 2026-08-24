@@ -13,7 +13,7 @@ try:
 except ImportError:
     from tkinter import ttk
 
-from kbl import agents, context, theme, tools as kbl_tools, toolstore
+from kbl import agents, context, markdown_render, theme, tools as kbl_tools, toolstore
 from kbl.chat_client import ServerError, chat_stream, fetch_models
 from kbl.conversations import ConversationStore, workspace_id_for
 
@@ -51,6 +51,7 @@ class ChatPanel(ttk.Frame):
         self._suggest_list = None
         self._suggest_token_start = None
         self._suggest_binding = None
+        self._dividers = []
 
         self._build()
         self._restyle()
@@ -105,13 +106,18 @@ class ChatPanel(ttk.Frame):
             combo_row, mode="indeterminate", length=140, maximum=1.0
         )
 
-        self.history = tk.Text(self, wrap="word", state="disabled")
-        self.history.pack(fill="both", expand=True, padx=4, pady=(4, 0))
+        self.pw = ttk.Panedwindow(self, orient="vertical")
+        self.pw.pack(fill="both", expand=True, padx=4, pady=(4, 0))
+
+        self.history = tk.Text(self.pw, wrap="word", state="disabled")
         theme.style_text(self.history)
         self.history.bind("<Button-3>", self._show_history_menu)
+        self.history.bind("<Configure>", lambda e: self._resize_dividers())
+        self.pw.add(self.history, weight=1)
 
-        entry_row = ttk.Frame(self)
-        entry_row.pack(fill="x", padx=4, pady=4)
+        entry_pane = ttk.Frame(self.pw)
+        entry_row = ttk.Frame(entry_pane)
+        entry_row.pack(fill="both", expand=True, padx=4, pady=4)
         self.stop_button = ttk.Button(
             entry_row, text="Stop", width=8, command=self._stop, state="disabled"
         )
@@ -123,6 +129,9 @@ class ChatPanel(ttk.Frame):
         self.input = tk.Text(entry_row, height=3, width=30, wrap="word")
         theme.style_text(self.input)
         self.input.pack(side="left", fill="both", expand=True)
+        self.pw.add(entry_pane, weight=0)
+
+        self.after_idle(self._init_sash)
 
         self.input.bind("<Return>", self._on_return)
         self.input.bind("<Shift-Return>", lambda e: None)
@@ -131,13 +140,28 @@ class ChatPanel(ttk.Frame):
         self.input.bind("<Up>", self._on_suggest_up)
         self.input.bind("<Escape>", self._close_suggestions)
 
+    def _init_sash(self):
+        if len(self.pw.panes()) < 2:
+            return
+        total = self.pw.winfo_height()
+        if total > 1:
+            self.pw.sashpos(0, max(60, total - 120))
+
     def _restyle(self):
         theme.style_text(self.history)
         theme.style_text(self.input)
+        markdown_render.setup_md_tags(self.history)
         self.history.tag_configure(
             "who", foreground=theme.PALETTE["accent"],
             font=(theme.FAMILY, theme.SIZE, "bold"),
         )
+        self.history.tag_configure(
+            "who_assistant",
+            foreground=theme.PALETTE["accent_hover"],
+            font=(theme.FAMILY, theme.SIZE, "bold"),
+        )
+        for _sep in self._dividers:
+            _sep.configure(bg=theme.PALETTE["border"])
         self.history.tag_configure(
             "think",
             foreground=theme.PALETTE.get("chrome_text_dim", theme.PALETTE["chrome_text"]),
@@ -344,7 +368,8 @@ class ChatPanel(ttk.Frame):
         self.progress.start(20)
 
         self.history.configure(state="normal")
-        self.history.insert("end", "\nAssistant: ")
+        self._maybe_divider()
+        self.history.insert("end", "\nAssistant:\n", "who_assistant")
         self.history.configure(state="disabled")
 
         thread = threading.Thread(
@@ -559,6 +584,13 @@ class ChatPanel(ttk.Frame):
             end_mark = f"_a{self._msg_seq}_e"
             self.history.mark_set(end_mark, "end-1c")
             self.history.mark_gravity(end_mark, "right")
+            start = self.history.index(self._content_start_mark)
+            end = self.history.index(f"{end_mark} + 1c")
+            body = self.history.get(start, end)
+            self.history.delete(start, end)
+            markdown_render.append_md(self.history, body)
+            self.history.mark_set(end_mark, "end-1c")
+            self.history.mark_gravity(end_mark, "right")
             self._assistant_blocks.append(
                 {
                     "conv_index": len(self.conversation) - 1,
@@ -584,6 +616,7 @@ class ChatPanel(ttk.Frame):
 
     def _append(self, who, text):
         self.history.configure(state="normal")
+        self._maybe_divider()
         self.history.insert("end", "\n")
         if who:
             self.history.insert("end", f"{who}: ", "who")
@@ -591,6 +624,26 @@ class ChatPanel(ttk.Frame):
             self.history.insert("end", text)
         self.history.see("end")
         self.history.configure(state="disabled")
+
+    # ---- message dividers + input resize ----
+
+    def _maybe_divider(self):
+        if self.history.compare("end-1c", ">", "1.0"):
+            self._insert_divider()
+
+    def _insert_divider(self):
+        sep = tk.Frame(self.history, height=1, relief="flat", bd=0)
+        sep.configure(bg=theme.PALETTE["border"])
+        self.history.window_create("end", window=sep, pady=6)
+        self._dividers.append(sep)
+        self._resize_dividers()
+
+    def _resize_dividers(self):
+        width = self.history.winfo_width() - 32
+        if width < 1:
+            return
+        for sep in self._dividers:
+            sep.configure(width=width)
 
     # ---- assistant message editing ----
 
@@ -805,6 +858,7 @@ class ChatPanel(ttk.Frame):
         self.history.configure(state="disabled")
         self._assistant_blocks = []
         self._thought_blocks = []
+        self._dividers = []
         self._thinking_text = []
         self._thinking_start = None
         self._thinking_collapsed = False
@@ -825,13 +879,14 @@ class ChatPanel(ttk.Frame):
 
     def _render_assistant(self, conv_index, content):
         self.history.configure(state="normal")
-        self.history.insert("end", "\nAssistant: ")
+        self._maybe_divider()
+        self.history.insert("end", "\nAssistant:\n", "who_assistant")
         start = self.history.index("end-1c")
         self._msg_seq += 1
         start_mark = f"_a{self._msg_seq}_s"
         self.history.mark_set(start_mark, start)
         self.history.mark_gravity(start_mark, "left")
-        self.history.insert("end", content)
+        markdown_render.append_md(self.history, content)
         end_mark = f"_a{self._msg_seq}_e"
         self.history.mark_set(end_mark, "end-1c")
         self.history.mark_gravity(end_mark, "right")

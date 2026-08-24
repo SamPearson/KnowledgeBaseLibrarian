@@ -253,7 +253,23 @@ def render_md_in_text(widget, md_text):
     _setup_tags(widget)
     widget.configure(state="normal")
     widget.delete("1.0", "end")
+    _render_body(widget, md_text or "")
+    widget.configure(state="disabled")
 
+
+def append_md(widget, md_text):
+    """Append markdown rendering at the end of ``widget`` without clearing it
+    or altering its ``state``. The md tags must already be configured via
+    :func:`setup_md_tags`."""
+    _render_body(widget, md_text or "")
+
+
+def setup_md_tags(widget):
+    """Configure the markdown display tags on ``widget`` (idempotent)."""
+    _setup_tags(widget)
+
+
+def _render_body(widget, md_text):
     lines = (md_text or "").replace("\r\n", "\n").split("\n")
     n = len(lines)
     i = 0
@@ -320,5 +336,3 @@ def render_md_in_text(widget, md_text):
 
         _insert_inline(widget, line + "\n", None)
         i += 1
-
-    widget.configure(state="disabled")
