@@ -33,7 +33,8 @@ class ChatPanel(ttk.Frame):
         self._store = ConversationStore()
         self._conv_id = None
         self._conv_name = self._default_conversation_name()
-        self._assistant_blocks = []
+        self._message_blocks = []
+        self._message_buttons = []
         self._content_start_mark = None
         self._msg_seq = 0
         self._request_queue = queue.Queue()
@@ -111,7 +112,6 @@ class ChatPanel(ttk.Frame):
 
         self.history = tk.Text(self.pw, wrap="word", state="disabled")
         theme.style_text(self.history)
-        self.history.bind("<Button-3>", self._show_history_menu)
         self.history.bind("<Configure>", lambda e: self._resize_dividers())
         self.pw.add(self.history, weight=1)
 
@@ -126,7 +126,7 @@ class ChatPanel(ttk.Frame):
             entry_row, text="Send", width=8, style="Accent.TButton", command=self._send
         )
         self.send_button.pack(side="right", padx=(4, 0))
-        self.input = tk.Text(entry_row, height=3, width=30, wrap="word")
+        self.input = tk.Text(entry_row, height=3, width=30, wrap="word", undo=True)
         theme.style_text(self.input)
         self.input.pack(side="left", fill="both", expand=True)
         self.pw.add(entry_pane, weight=0)
@@ -139,6 +139,91 @@ class ChatPanel(ttk.Frame):
         self.input.bind("<Down>", self._on_suggest_down)
         self.input.bind("<Up>", self._on_suggest_up)
         self.input.bind("<Escape>", self._close_suggestions)
+        self._bind_input_keys()
+
+    def _bind_input_keys(self):
+        inp = self.input
+
+        def noop(event):
+            return "break"
+
+        def select_all(event):
+            inp.tag_add("sel", "1.0", "end")
+            return "break"
+
+        def copy(event):
+            try:
+                rng = inp.tag_ranges("sel")
+                if rng:
+                    inp.clipboard_clear()
+                    inp.clipboard_append(inp.get(rng[0], rng[1]))
+            except tk.TclError:
+                pass
+            return "break"
+
+        def cut(event):
+            try:
+                rng = inp.tag_ranges("sel")
+                if rng:
+                    inp.clipboard_clear()
+                    inp.clipboard_append(inp.get(rng[0], rng[1]))
+                    inp.delete(rng[0], rng[1])
+            except tk.TclError:
+                pass
+            return "break"
+
+        def paste(event):
+            try:
+                data = inp.clipboard_get()
+            except tk.TclError:
+                return "break"
+            if data:
+                inp.insert("insert", data)
+            return "break"
+
+        def undo(event):
+            try:
+                inp.edit_undo()
+            except tk.TclError:
+                pass
+            return "break"
+
+        def redo(event):
+            try:
+                inp.edit_redo()
+            except tk.TclError:
+                pass
+            return "break"
+
+        # Standard editing shortcuts, implemented directly so behaviour is
+        # consistent across platforms (Tk's emacs-style Control bindings are
+        # replaced rather than relied upon).
+        inp.bind("<Control-a>", select_all)
+        inp.bind("<Control-A>", select_all)
+        inp.bind("<Control-c>", copy)
+        inp.bind("<Control-C>", copy)
+        inp.bind("<Control-x>", cut)
+        inp.bind("<Control-X>", cut)
+        inp.bind("<Control-v>", paste)
+        inp.bind("<Control-V>", paste)
+        inp.bind("<Control-z>", undo)
+        inp.bind("<Control-Z>", undo)
+        inp.bind("<Control-y>", redo)
+        inp.bind("<Control-Y>", redo)
+        inp.bind("<Control-Shift-Z>", redo)
+        inp.bind("<Control-Shift-z>", redo)
+
+        # Neutralize the emacs-style Control-letter bindings Tk's Text widget
+        # enables by default (Ctrl+H/K/D/T/O) which feel out of place in a
+        # normal GUI editor.
+        for seq in (
+            "<Control-h>", "<Control-H>",
+            "<Control-k>", "<Control-K>",
+            "<Control-d>", "<Control-D>",
+            "<Control-t>", "<Control-T>",
+            "<Control-o>", "<Control-O>",
+        ):
+            inp.bind(seq, noop)
 
     def _init_sash(self):
         if len(self.pw.panes()) < 2:
@@ -583,21 +668,23 @@ class ChatPanel(ttk.Frame):
         ):
             end_mark = f"_a{self._msg_seq}_e"
             self.history.mark_set(end_mark, "end-1c")
-            self.history.mark_gravity(end_mark, "right")
+            self.history.mark_gravity(end_mark, "left")
             start = self.history.index(self._content_start_mark)
             end = self.history.index(f"{end_mark} + 1c")
             body = self.history.get(start, end)
             self.history.delete(start, end)
             markdown_render.append_md(self.history, body)
             self.history.mark_set(end_mark, "end-1c")
-            self.history.mark_gravity(end_mark, "right")
-            self._assistant_blocks.append(
+            self.history.mark_gravity(end_mark, "left")
+            self._message_blocks.append(
                 {
+                    "role": "assistant",
                     "conv_index": len(self.conversation) - 1,
                     "start_mark": self._content_start_mark,
                     "end_mark": end_mark,
                 }
             )
+            self._add_edit_footer(len(self.conversation) - 1, "assistant")
         self.history.insert("end", "\n")
         self.history.see("end")
         self.history.configure(state="disabled")
@@ -614,14 +701,37 @@ class ChatPanel(ttk.Frame):
 
     # ---- history helpers ----
 
-    def _append(self, who, text):
+    def _append(self, who, text, conv_index=None):
         self.history.configure(state="normal")
         self._maybe_divider()
         self.history.insert("end", "\n")
         if who:
             self.history.insert("end", f"{who}: ", "who")
+        start = self.history.index("end-1c")
         if text:
-            self.history.insert("end", text)
+            if who == "User":
+                markdown_render.append_md(self.history, text)
+            else:
+                self.history.insert("end", text)
+        end = self.history.index("end-1c")
+        if who == "User" and text:
+            self._msg_seq += 1
+            start_mark = f"_m{self._msg_seq}_s"
+            end_mark = f"_m{self._msg_seq}_e"
+            self.history.mark_set(start_mark, start)
+            self.history.mark_gravity(start_mark, "left")
+            self.history.mark_set(end_mark, end)
+            self.history.mark_gravity(end_mark, "left")
+            ci = conv_index if conv_index is not None else len(self.conversation) - 1
+            self._message_blocks.append(
+                {
+                    "role": "user",
+                    "conv_index": ci,
+                    "start_mark": start_mark,
+                    "end_mark": end_mark,
+                }
+            )
+            self._add_edit_footer(ci, "user")
         self.history.see("end")
         self.history.configure(state="disabled")
 
@@ -645,39 +755,33 @@ class ChatPanel(ttk.Frame):
         for sep in self._dividers:
             sep.configure(width=width)
 
-    # ---- assistant message editing ----
+    # ---- message editing ----
 
-    def _show_history_menu(self, event):
-        if self._streaming:
-            return
-        block = self._block_at_index(self.history.index(f"@{event.x},{event.y}"))
-        if block is None:
-            return
-        menu = tk.Menu(self, tearoff=0)
-        menu.add_command(
-            label="Edit assistant message",
-            command=lambda b=block: self._edit_message(b),
-        )
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+    def _add_edit_footer(self, conv_index, role):
+        footer = ttk.Frame(self.history)
+        ttk.Button(
+            footer,
+            text="Edit",
+            takefocus=0,
+            command=lambda ci=conv_index, r=role: self._edit_message(ci, r),
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            footer,
+            text="Delete",
+            takefocus=0,
+            command=lambda ci=conv_index: self._delete_message(ci),
+        ).pack(side="left")
+        self.history.window_create("end", window=footer)
+        self.history.insert("end", "\n")
+        self._message_buttons.append(footer)
 
-    def _block_at_index(self, index):
-        for block in self._assistant_blocks:
-            if self.history.compare(
-                index, ">=", block["start_mark"]
-            ) and self.history.compare(index, "<=", block["end_mark"]):
-                return block
-        return None
-
-    def _edit_message(self, block):
-        if self._streaming or block["conv_index"] >= len(self.conversation):
+    def _edit_message(self, conv_index, role):
+        if self._streaming or conv_index >= len(self.conversation):
             return
-        current = self.conversation[block["conv_index"]].get("content") or ""
+        current = self.conversation[conv_index].get("content") or ""
 
         dialog = tk.Toplevel(self)
-        dialog.title("Edit assistant message")
+        dialog.title(f"Edit {role} message")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -693,16 +797,11 @@ class ChatPanel(ttk.Frame):
 
         def _save():
             new = text.get("1.0", "end-1c")
-            self.conversation[block["conv_index"]]["content"] = new
+            self.conversation[conv_index]["content"] = new
             self.persist()
-            self.history.configure(state="normal")
-            self.history.delete(block["start_mark"], block["end_mark"])
-            self.history.insert(block["start_mark"], new)
-            self.history.mark_set(
-                block["end_mark"], f"{block['start_mark']} + {len(new)}c"
-            )
-            self.history.see(block["start_mark"])
-            self.history.configure(state="disabled")
+            view = self.history.yview()
+            self._render_history()
+            self.history.yview_moveto(view[0])
             dialog.destroy()
 
         def _cancel():
@@ -713,6 +812,49 @@ class ChatPanel(ttk.Frame):
         )
         ttk.Button(
             row, text="Save", style="Accent.TButton", command=_save
+        ).pack(side="right")
+        dialog.bind("<Escape>", lambda e: _cancel())
+
+    def _delete_message(self, conv_index):
+        if self._streaming or not (0 <= conv_index < len(self.conversation)):
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Delete messages")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        following = len(self.conversation) - conv_index - 1
+        if following:
+            detail = (
+                f"Delete this message and the {following} message(s) "
+                f"after it? This cannot be undone."
+            )
+        else:
+            detail = "Delete this message? This cannot be undone."
+        ttk.Label(dialog, text=detail, wraplength=320, justify="left").pack(
+            padx=12, pady=12
+        )
+
+        row = ttk.Frame(dialog)
+        row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def _confirm():
+            del self.conversation[conv_index:]
+            self.persist()
+            view = self.history.yview()
+            self._render_history()
+            self.history.yview_moveto(view[0])
+            dialog.destroy()
+
+        def _cancel():
+            dialog.destroy()
+
+        ttk.Button(row, text="Cancel", command=_cancel).pack(
+            side="right", padx=(4, 0)
+        )
+        ttk.Button(
+            row, text="Delete", style="Accent.TButton", command=_confirm
         ).pack(side="right")
         dialog.bind("<Escape>", lambda e: _cancel())
 
@@ -854,9 +996,12 @@ class ChatPanel(ttk.Frame):
 
     def _render_history(self):
         self.history.configure(state="normal")
+        for btn in self._message_buttons:
+            btn.destroy()
+        self._message_buttons = []
         self.history.delete("1.0", "end")
         self.history.configure(state="disabled")
-        self._assistant_blocks = []
+        self._message_blocks = []
         self._thought_blocks = []
         self._dividers = []
         self._thinking_text = []
@@ -873,7 +1018,7 @@ class ChatPanel(ttk.Frame):
                 if match:
                     self._append("Attached", match.group(1))
                 elif content:
-                    self._append("User", content)
+                    self._append("User", content, index)
             elif role == "assistant" and isinstance(content, str) and content:
                 self._render_assistant(index, content)
 
@@ -889,16 +1034,18 @@ class ChatPanel(ttk.Frame):
         markdown_render.append_md(self.history, content)
         end_mark = f"_a{self._msg_seq}_e"
         self.history.mark_set(end_mark, "end-1c")
-        self.history.mark_gravity(end_mark, "right")
-        self.history.see("end")
-        self.history.configure(state="disabled")
-        self._assistant_blocks.append(
+        self.history.mark_gravity(end_mark, "left")
+        self._message_blocks.append(
             {
+                "role": "assistant",
                 "conv_index": conv_index,
                 "start_mark": start_mark,
                 "end_mark": end_mark,
             }
         )
+        self._add_edit_footer(conv_index, "assistant")
+        self.history.see("end")
+        self.history.configure(state="disabled")
 
     # ---- tool call rendering ----
 

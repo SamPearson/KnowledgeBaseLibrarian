@@ -18,7 +18,16 @@ def main(argv=None):
 
     config = Config()
     if args.workspace:
-        WorkspaceManager(config).set_active(args.workspace)
+        # Register + select as this instance's active workspace. This is
+        # per-instance session state and must NOT persist a single shared
+        # "active_workspace", so a second window can't adopt this project.
+        wm = WorkspaceManager(config)
+        wm.register(args.workspace)
+        wm.set_active(args.workspace, persist_default=False)
+    else:
+        # No explicit workspace: seed from the persisted default (single-user
+        # convenience). Never a peer instance's --workspace project.
+        config.active_workspace = config.data.get("default_workspace")
 
     window = MainWindow(config)
     window.mainloop()

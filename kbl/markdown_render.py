@@ -132,12 +132,12 @@ def _tokenize_inline(text):
     return tokens
 
 
-def _insert_inline(widget, text, extra_tags):
+def _insert_inline(widget, text, extra_tags, index="end"):
     for chunk, tag in _tokenize_inline(text):
         tags = (tag,) if tag else ()
         if extra_tags:
             tags = tags + extra_tags
-        widget.insert("end", chunk, tags)
+        widget.insert(index, chunk, tags)
 
 
 def _is_table_sep(line):
@@ -184,7 +184,7 @@ def _norm_row(cells, ncol):
     return cells[:ncol]
 
 
-def _render_table(widget, header, sep, data):
+def _render_table(widget, header, sep, data, index="end"):
     sep_cells = _split_row(sep)
     aligns = _parse_align(sep_cells)
     header_cells = _split_row(header)
@@ -206,18 +206,18 @@ def _render_table(widget, header, sep, data):
     def hseg(left, mid, right):
         return left + mid.join("─" * (w + 2) for w in widths) + right
 
-    widget.insert("end", "\n", ())
-    widget.insert("end", hseg("┌", "┬", "┐") + "\n", ("md_mono",))
-    _insert_table_row(widget, header_cells, widths, aligns, True)
-    widget.insert("end", hseg("├", "┼", "┤") + "\n", ("md_mono",))
+    widget.insert(index, "\n", ())
+    widget.insert(index, hseg("┌", "┬", "┐") + "\n", ("md_mono",))
+    _insert_table_row(widget, header_cells, widths, aligns, True, index=index)
+    widget.insert(index, hseg("├", "┼", "┤") + "\n", ("md_mono",))
     for row in data_cells:
-        _insert_table_row(widget, row, widths, aligns, False)
-    widget.insert("end", hseg("└", "┴", "┘") + "\n", ("md_mono",))
-    widget.insert("end", "\n", ())
+        _insert_table_row(widget, row, widths, aligns, False, index=index)
+    widget.insert(index, hseg("└", "┴", "┘") + "\n", ("md_mono",))
+    widget.insert(index, "\n", ())
 
 
-def _insert_table_row(widget, cells, widths, aligns, is_header):
-    widget.insert("end", "│", ("md_mono",))
+def _insert_table_row(widget, cells, widths, aligns, is_header, index="end"):
+    widget.insert(index, "│", ("md_mono",))
     for col in range(len(cells)):
         raw = cells[col]
         segs = _tokenize_inline(raw)
@@ -232,20 +232,20 @@ def _insert_table_row(widget, cells, widths, aligns, is_header):
         cell_tags = ("md_mono", "md_table_cell")
         if is_header:
             cell_tags = cell_tags + ("md_table_header",)
-        widget.insert("end", " ", cell_tags)
+        widget.insert(index, " ", cell_tags)
         if l_space:
-            widget.insert("end", " " * l_space, cell_tags)
+            widget.insert(index, " " * l_space, cell_tags)
         for text, tag in segs:
             # Keep only color-based tags (link) inside cells so monospace
             # alignment is preserved; drop font-changing emphasis.
             seg_tag = tag if tag == "md_link" else None
             t = (seg_tag,) if seg_tag else ()
-            widget.insert("end", text, cell_tags + t)
+            widget.insert(index, text, cell_tags + t)
         if r_space:
-            widget.insert("end", " " * r_space, cell_tags)
-        widget.insert("end", " ", cell_tags)
-        widget.insert("end", "│", ("md_mono",))
-    widget.insert("end", "\n", ("md_mono",))
+            widget.insert(index, " " * r_space, cell_tags)
+        widget.insert(index, " ", cell_tags)
+        widget.insert(index, "│", ("md_mono",))
+    widget.insert(index, "\n", ("md_mono",))
 
 
 def render_md_in_text(widget, md_text):
@@ -257,11 +257,11 @@ def render_md_in_text(widget, md_text):
     widget.configure(state="disabled")
 
 
-def append_md(widget, md_text):
-    """Append markdown rendering at the end of ``widget`` without clearing it
-    or altering its ``state``. The md tags must already be configured via
-    :func:`setup_md_tags`."""
-    _render_body(widget, md_text or "")
+def append_md(widget, md_text, index="end"):
+    """Append markdown rendering at ``index`` (default ``"end"``) of ``widget``
+    without clearing it or altering its ``state``. The md tags must already be
+    configured via :func:`setup_md_tags`."""
+    _render_body(widget, md_text or "", index)
 
 
 def setup_md_tags(widget):
@@ -269,7 +269,7 @@ def setup_md_tags(widget):
     _setup_tags(widget)
 
 
-def _render_body(widget, md_text):
+def _render_body(widget, md_text, index="end"):
     lines = (md_text or "").replace("\r\n", "\n").split("\n")
     n = len(lines)
     i = 0
@@ -280,7 +280,7 @@ def _render_body(widget, md_text):
         if stripped.startswith("```"):
             i += 1
             while i < n and not lines[i].strip().startswith("```"):
-                widget.insert("end", lines[i] + "\n", ("md_code_block",))
+                widget.insert(index, lines[i] + "\n", ("md_code_block",))
                 i += 1
             i += 1
             continue
@@ -299,7 +299,7 @@ def _render_body(widget, md_text):
             continue
 
         if stripped in ("---", "***", "___"):
-            widget.insert("end", "─" * 30 + "\n", ("md_hr",))
+            widget.insert(index, "─" * 30 + "\n", ("md_hr",))
             i += 1
             continue
 
@@ -318,7 +318,7 @@ def _render_body(widget, md_text):
             while j < n and "|" in lines[j].strip() and lines[j].strip() != "":
                 data.append(lines[j])
                 j += 1
-            _render_table(widget, header, sep, data)
+            _render_table(widget, header, sep, data, index=index)
             i = j
             continue
 
@@ -329,10 +329,10 @@ def _render_body(widget, md_text):
             content = list_match.group(3)
             level = indent // 2
             bullet = "•" if marker in ("-", "*", "+") else f"{marker} "
-            widget.insert("end", "  " * level + bullet + " ")
-            _insert_inline(widget, content + "\n", None)
+            widget.insert(index, "  " * level + bullet + " ")
+            _insert_inline(widget, content + "\n", None, index=index)
             i += 1
             continue
 
-        _insert_inline(widget, line + "\n", None)
+        _insert_inline(widget, line + "\n", None, index=index)
         i += 1

@@ -320,7 +320,9 @@ class MainWindow(tk.Tk):
 
     def _activate_workspace(self, path):
         self.panels["chat"].persist()
-        self.workspaces.set_active(path)
+        # User-initiated switch: make it this instance's active workspace and
+        # persist it as the default for future no---workspace launches.
+        self.workspaces.set_active(path, persist_default=True)
         self.panels["tree"].set_workspace(path)
         self.panels["chat"]._on_workspace_changed()
         self._update_workspace_menu()
