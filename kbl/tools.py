@@ -170,6 +170,30 @@ def _schema(properties, required=()):
     }
 
 
+def _create_file(workspace, path, content=""):
+    """Create a new markdown file in the workspace with optional initial content."""
+    if not content or not content.strip():
+        content = ""
+    
+    target = _within(workspace, path)
+    
+    # Ensure .md extension
+    if not target.suffix.lower() == ".md":
+        target = target.with_suffix(".md")
+    
+    # Check if file already exists
+    if target.exists():
+        raise ToolError(f"File already exists: {target.relative_to(workspace)}")
+    
+    try:
+        # Create parent directories if needed
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"Created {target.relative_to(workspace)}"
+    except OSError as exc:
+        raise ToolError(f"Could not create file: {exc}")
+
+
 def builtin_tools(workspace):
     """Return the built-in tools bound to a workspace path."""
     workspace = Path(workspace) if workspace else None
@@ -234,11 +258,33 @@ def builtin_tools(workspace):
         Tool(
             name="get_current_date",
             description=(
-                "Return the current date, time, and weekday so you can resolve "
+                "Return the current date, time, andweekday so you can resolve "
                 "relative dates like 'tomorrow'."
             ),
             parameters=_schema({}),
             func=_get_current_date,
+        ),
+        Tool(
+            name="create_file",
+            description=(
+                "Create a new markdown file in the workspace with optional initial "
+                "content. Files are automatically given the .md extension if not "
+                "specified. Fails if the file already exists."
+            ),
+            parameters=_schema(
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the new file, relative to the workspace root. Will be created in subdirectories as needed.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Optional initial content for the file. Defaults to empty.",
+                    }
+                },
+                required=["path"],
+            ),
+            func=lambda path, content="": _create_file(workspace, path, content),
         ),
     ]
     return tools
