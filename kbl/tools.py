@@ -8,6 +8,8 @@ a ``tool`` message. ``builtin_tools`` binds the tools to the active workspace.
 
 import json
 import re
+import difflib
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -174,17 +176,17 @@ def _create_file(workspace, path, content=""):
     """Create a new markdown file in the workspace with optional initial content."""
     if not content or not content.strip():
         content = ""
-    
+
     target = _within(workspace, path)
-    
+
     # Ensure .md extension
     if not target.suffix.lower() == ".md":
         target = target.with_suffix(".md")
-    
+
     # Check if file already exists
     if target.exists():
         raise ToolError(f"File already exists: {target.relative_to(workspace)}")
-    
+
     try:
         # Create parent directories if needed
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +195,60 @@ def _create_file(workspace, path, content=""):
     except OSError as exc:
         raise ToolError(f"Could not create file: {exc}")
 
+
+def _edit_file(workspace, path, new_content):
+    """Edit an existing markdown file by providing its complete new content. 
+    The original file is automatically backed up to a backups/ subdirectory 
+    with a unix timestamp. Returns a unified diff showing what changed."""
+    target = _within(workspace, path)
+
+    if not target.is_file():
+        raise ToolError(f"No such file: {path}")
+
+    # Read current content
+    try:
+        old_content = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ToolError(f"Could not read {path}: {exc}")
+
+    # Validate new content
+    if not new_content or not new_content.strip():
+        raise ToolError("New content cannot be empty.")
+
+    try:
+        new_content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ToolError(f"Invalid UTF-8 content: {exc}")
+
+    # Create backup directory and file
+    backup_dir = target.parent / "backups"
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = int(time.time())
+        backup_path = backup_dir / f"{target.stem}.{timestamp}.bak"
+        backup_path.write_text(old_content, encoding="utf-8")
+    except OSError as exc:
+        raise ToolError(f"Could not create backup: {exc}")
+
+    # Write new content
+    try:
+        target.write_text(new_content, encoding="utf-8")
+    except OSError as exc:
+        raise ToolError(f"Could not write to {path}: {exc}")
+
+    # Generate unified diff
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=f"{path} (original)",
+        tofile=f"{path} (updated)",
+        n=3
+    )
+    diff_text = "".join(diff)
+
+    return f"File updated and backed up to backups/{target.stem}.{timestamp}.bak\n\nChanges:\n{diff_text}"
 
 def builtin_tools(workspace):
     """Return the built-in tools bound to a workspace path."""
@@ -285,6 +341,28 @@ def builtin_tools(workspace):
                 required=["path"],
             ),
             func=lambda path, content="": _create_file(workspace, path, content),
+        ),
+        Tool(
+            name="edit_file",
+            description=(
+                "Edit an existing markdown file by providing its complete new content. "
+                "The original file is automatically backed up to a backups/ subdirectory "
+                "with a unix timestamp. Returns a unified diff showing what changed."
+            ),
+            parameters=_schema(
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to edit, relative to the workspace root.",
+                    },
+                    "new_content": {
+                        "type": "string",
+                        "description": "The complete new content for the file.",
+                    }
+                },
+                required=["path", "new_content"],
+            ),
+            func=lambda path, new_content: _edit_file(workspace, path, new_content),
         ),
     ]
     return tools
