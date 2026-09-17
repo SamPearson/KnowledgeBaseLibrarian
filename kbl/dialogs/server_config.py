@@ -11,6 +11,17 @@ except ImportError:
 from kbl import theme
 from kbl.chat_client import ServerError, fetch_models
 
+# Default cap on tool-call rounds per request. Mirrors the chat panel's own
+# fallback so the two dialogs never disagree about an unset value.
+_DEFAULT_MAX_TOOL_ROUNDS = 8
+
+
+def _valid_max_tool_rounds(value):
+    """Coerce a user-entered string to a positive int, clamped to >= 1."""
+    try:
+        return max(1, int(str(value).strip()))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TOOL_ROUNDS
 
 class ServerConfigDialog(tk.Toplevel):
     """Configure the OpenAI-compatible server and model.
@@ -72,6 +83,21 @@ class ServerConfigDialog(tk.Toplevel):
             style="Dim.TLabel",
         ).pack(anchor="w", pady=(4, 0))
 
+        rounds = ttk.LabelFrame(frame, text="Max tool rounds", padding=8)
+        rounds.pack(fill="x", pady=(0, 16))
+        self.max_rounds_var = tk.StringVar()
+        self.max_rounds_var.set(str(_DEFAULT_MAX_TOOL_ROUNDS))
+        ttk.Entry(rounds, textvariable=self.max_rounds_var).pack(fill="x")
+        ttk.Label(
+            rounds,
+            text=(
+                "Max tool-call rounds per request (e.g. 8). Raise this for "
+                "longer research tasks with agent models."
+            ),
+            style="Dim.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
+
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x")
         self.status_var = tk.StringVar()
@@ -92,6 +118,9 @@ class ServerConfigDialog(tk.Toplevel):
         self.server_var.set(config.data.get("server") or "")
         self.model_var.set(config.data.get("model") or "")
         self.api_key_var.set(config.data.get("api_key") or "")
+        self.max_rounds_var.set(
+            str(config.data.get("max_tool_rounds") or _DEFAULT_MAX_TOOL_ROUNDS)
+        )
 
     def _fetch_models(self):
         server = self.server_var.get().strip()
@@ -128,6 +157,9 @@ class ServerConfigDialog(tk.Toplevel):
         config.data["server"] = server
         config.data["model"] = model
         config.data["api_key"] = self.api_key_var.get().strip()
+        config.data["max_tool_rounds"] = _valid_max_tool_rounds(
+            self.max_rounds_var.get()
+        )
         config.save()
         if self.on_saved:
             self.on_saved()

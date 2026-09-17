@@ -26,6 +26,7 @@ DEFAULTS = {
     "active_agent": None,
     "disabled_tools": [],
     "active_conversation": {},
+    "max_tool_rounds": 8,
 }
 
 

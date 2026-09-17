@@ -18,7 +18,10 @@ from kbl.chat_client import ServerError, chat_stream, fetch_models
 from kbl.conversations import ConversationStore, workspace_id_for
 
 _MANAGE_AGENTS_LABEL = "Manage agents..."
-_MAX_TOOL_ITERATIONS = 8
+# Default cap on tool-call rounds for an agent loop. Users can override this in
+# the server config dialog; the value is read per-request in
+# ChatPanel._max_tool_rounds().
+_DEFAULT_MAX_TOOL_ROUNDS = 8
 _ATTACH_RE = re.compile(r"@([^\s,.;:!?\"'()\[\]{}<>]+)")
 _TOOL_PREVIEW_LIMIT = 160
 _SUGGESTION_LIMIT = 30
@@ -481,8 +484,9 @@ class ChatPanel(ttk.Frame):
         tool_messages = []
         content_parts = []
         call_seq = 0
+        max_rounds = self._max_tool_rounds()
         try:
-            for _round in range(_MAX_TOOL_ITERATIONS):
+            for _round in range(max_rounds):
                 calls = None
                 for kind, piece in chat_stream(
                     server,
@@ -522,7 +526,7 @@ class ChatPanel(ttk.Frame):
                     )
             else:
                 self._request_queue.put(
-                    ("error", f"Stopped after {_MAX_TOOL_ITERATIONS} tool rounds.")
+                    f"Stopped after {max_rounds} tool rounds."
                 )
                 return
             final_text = "".join(content_parts)
@@ -535,6 +539,20 @@ class ChatPanel(ttk.Frame):
             self._request_queue.put(("done", final_text))
         except Exception as exc:
             self._request_queue.put(("error", str(exc)))
+
+    def _max_tool_rounds(self):
+        """Tool-call round cap for an agent loop, from user config.
+
+        The app lets you raise this in the server config dialog for longer
+        research tasks with agent models. Falls back to a sane default when the
+        configured value is missing, non-integer, or below one (a loop of a
+        single round is pointless).
+        """
+        try:
+            value = int(self.master.config.data.get("max_tool_rounds") or 0)
+        except (TypeError, ValueError):
+            value = 0
+        return value if value >= 1 else _DEFAULT_MAX_TOOL_ROUNDS
 
     def _normalize_call(self, call, seq):
         return {
