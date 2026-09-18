@@ -1,152 +1,207 @@
-# Application Design
+# Knowledge Base Librarian — System Architecture
 
-## Overview
+> A living document. This describes the system's actual structure today and the evolution toward a pluggable, event-driven framework.
 
-Desktop app (Python + tkinter): a markdown editor with an AI chat panel.
-See [pitch.md](pitch.md) for the project pitch.
+## 1. System Intent
 
-## UI layout
+The application is a **desktop knowledge-management agent** built on a decoupled LLM harness. At its core is a powerful abstraction: **a workspace = a directory = a knowledge base.** This abstraction is the foundation for the "rock solid framework" — because everything downstream (file trees, chat context, tool access) derives from a single concept of "active knowledge."
 
-- Launching the application presents a window.
-- The user can configure the number, position, and size of panels in the window.
-- The window has a file tree manager; you can create and delete md files and
-  folders.
-- The window has a file editor, which can be in edit or display mode.
-- The window has a chat panel (not hooked up to anything yet).
+The stated north star:
+> **Narrow AI guarantee** — whatever is enabled in a given run is all the model can reach. This keeps behavior predictable and testable.
 
-## Workspaces
+---
 
-- A workspace (a.k.a. project) is a top-level folder on disk whose markdown
-  files form a knowledge base.
-- The user manages a list of workspace paths (add/remove) and one active
-  workspace; the file tree mirrors the active workspace's directory.
+## 2. The Six Major Areas (your decomposition)
 
-## Server configuration
+| # | Area | Responsibility | Framework concern |
+|---|------|---------------|-------------------|
+| 1 | **Tkinter (foundation)** | Widgets, theming, event loop | Must stay a *view layer only* |
+| 2 | **Main Window (orchestration)** | Layout + panel composition | Must become a *mediator*, not a god-object |
+| 3 | **Directory Tree (Library)** | Browse/manage files | Emits events; must not depend on Chat |
+| 4 | **Display Area (Display)** | Render selected content | Stateless view |
+| 5 | **Chat Panel (UI for harness)** | User conversation surface | Emits "send" events; must not call harness directly |
+| 6 | **LLM Harness (brain)** | Compose request, call server, run tools | Pure service; zero Tkinter imports |
 
-- A server configuration dialog. The user enters a single server URL covering
-  protocol, host, port, and any path suffix in one field, e.g.
-  `http://localhost:11434/v1` (Ollama) or `http://localhost:8080/v1`
-  (llama.cpp server).
-- Both Ollama and llama.cpp expose the OpenAI-compatible API at `<host>/v1`, so
-  one client handles both servers.
-- Chat happens in the chat panel. Go as simple as possible first.
+---
 
-## Context strategy
+## 3. Current Architecture — What It Actually Is
 
-Full files are fed into the LLM. Simplest thing to implement; we can revisit
-retrieval/chunking later if file sizes make it impractical.
-
-Every request has two independent parts — the **system message** (prose:
-identity, behavior, guidance) and the **tools list** (schemas the model can call).
-Between them, three things reach the model:
-
-- **Composed system prose** — agent identity + workspace instructions + tool gating.
-- **User-attached files** — files pinned with `@` in chat; injected as messages
-  with their contents, sent regardless of what the model decides.
-- **Tool results** — appended as `tool`-role messages when a tool is called.
-
-So built-in access to the wiki and the date is exposed as tools the model calls,
-not text injected every turn. Relevance is the model's job: it lists/searches,
-checks headings, then reads the files it actually needs.
-
-## Plugins / Skills
-
-Modeled after OpenClaw skills (AgentSkills spec): a folder containing a `SKILL.md`
-with YAML frontmatter (`name`, `description`) and a markdown body of instructions,
-optionally bundled with executable code.
-
-"Built-in" just means a tool that ships with the app. Built-ins are editable and
-toggleable like any other tool — the narrow-AI guarantee is that whatever is
-enabled is all the model can reach. Tool management (folders, editor,
-enable/disable) is M4.
-
-### The line that defines a plugin
-
-> A plugin is anything that gathers context or takes action **outside the
-> markdown wiki**.
-
-- Wiki knowledge (e.g. "what workout goes on what day") lives in the md files,
-  so it's built-in context, not a plugin.
-- Reaching an external system (Redmine API, todo API) is a plugin.
-- This keeps the default AI surface narrow: just the wiki plus date. Everything
-  else is opt-in.
-
-### Contract
+Reading the code reveals the current system is a **three-layer application** with an important architectural tension:
 
 ```
-<tools_root>/<name>/
-  SKILL.md   # frontmatter: name + description; body: when/how to use it
-  tools.py   # optional: functions, each registering a name, description, schema
+┌─────────────────────────────────────────────────┐
+│                    Tkinter UI                    │
+│  MainWindow (tk.Tk)                              │
+│  ├── FileTreePanel (on_open=...)  ← callbacks   │
+│  ├── EditorPanel (config=...)                     │
+│  └── ChatPanel (on_configure=...)  ← callbacks   │
+├─────────────────────────────────────────────────┤
+│                   Services                        │
+│  WorkspaceManager | Config | ConversationStore   │
+│  Agents | Context | Tools | ToolStore            │
+├─────────────────────────────────────────────────┤
+│                 Data / Model                    │
+│  workspaces (in-memory) | config.json | convs   │
+└─────────────────────────────────────────────────┘
 ```
 
-- Tool roots: built-ins ship in app code; a global root (`~/.kbl/tools/`) is
-  available in every workspace; a per-workspace root only in its own workspace.
-- At startup the app scans the tool roots, parses each `SKILL.md`, and injects
-  the name/description into the system prompt so the model knows what exists and
-  when to use it (this is the "gating").
-- Tool schemas = built-ins (wiki file ops, date, search) + each tool's `tools.py`,
-  exposed to the model as callable functions. Ollama supports function calling
-  natively.
-- Chat flow: user message -> model -> optional tool call -> app runs the Python
-  function -> result fed back -> model continues.
 
-Built-ins are kept behind the same "name + description + callable" interface as
-plugins, so a plugin is just "enable the folder scan."
+### Key insight from the code
 
-### MVP stance
+The current coupling model uses **callbacks passed in the constructor**. Look at `MainWindow`:
 
-Implement only built-ins (wiki + date) for the MVP. The plugin system is then
-turning on the folder scan later; the contract doesn't change.
+```python
+self.panels["tree"] = FileTreePanel(self, on_open=self._open_file)
+self.panels["chat"] = ChatPanel(
+    self,
+    on_configure_server=self._show_server_config,
+    on_manage_agents=self._show_agent_manager,
+)
+```
 
-### Notes
 
-- Plugins are arbitrary local Python; same trust model as any locally installed
-  app code. Users should only install plugins they trust.
+And `ChatPanel` reaches into `self.master`:
 
-## Milestones
+```python
+config = self.master.config
+workspace = self.master.workspaces.active
+```
 
-Each milestone is a big enough bite to build and use on its own. Nothing ships
-until the milestone is usable end-to-end.
 
-Each milestone has a design doc: [M1](milestones/M1-app-shell.md),
-[M2](milestones/M2-chat-no-context.md), [M3](milestones/M3-wiki-context.md),
-[M4](milestones/M4-plugin-system.md).
+This is the **primary architectural risk.** The panels depend on `self.master` for config, workspaces, and cross-panel actions. This works for a prototype but will collapse as you add more panels. **This is exactly the "giant callback" smell the tkinter guidelines warn against.**
 
-### M1 — App shell
+### The good news (it's already well-siloed)
 
-- Window with configurable panels (number, position, size).
-- File tree manager: add/remove md files.
-- File editor with edit and display modes.
-- No chat yet.
+Several components are **pure services with zero Tkinter imports** — these are the framework's future building blocks:
 
-### M2 — Chat, no context
+- **`chat_client.py`** — pure OpenAI-compatible client. No Tkinter. Ready to reuse.
+- **`tools.py`** — the tool execution engine (`Tool.run()`, `run_tool()`). Pure Python.
+- **`context.py`** — system message composition. Pure Python.
+- **`agents.py`** — agent persona management (inferred). Pure Python.
+- **`workspaces.py`** — workspace state management. Pure Python.
+- **`conversations.py`** — conversation persistence. Pure Python.
 
-- Server configuration dialog.
-- Chat panel wired up: send messages, see replies.
-- No context: the model gets only the conversation.
-- Learn the OpenAI-compatible client / prompting here.
+**This is your strongest asset for the framework:** the "brain" is already decoupled. You just need to formalize the contracts between it and the UI.
 
-### M3 — Wiki tools & context
+---
 
-- Built-in tools: `list_files`, `read_file`, `search_files`, `get_headings`,
-  `get_current_date` — editable and toggleable like any tool.
-- Wire function calling so the model can pull files as context; tool calls are
-  visible in the chat panel as they happen.
-- Request composition: agent prompt + workspace instructions + tools list.
-- `@`-mention in chat to attach a file's contents to the request.
-- Goal: "what's tomorrow's workout" works using only the wiki.
+## 4. The Event-Driven Transformation
 
-### M4 — Tool management
+Your goal is event-driven, swappable components. Here is the target architecture:
 
-- Tool manager UI on the existing file tree + editor: create/edit/delete tools.
-- Global tools root (`~/.kbl/tools/`) + a per-workspace tools root.
-- Folder scan for `<tools_root>/<name>/SKILL.md` + `tools.py`.
-- Enable/disable list covering built-ins too; disabled tools vanish from the
-  prompt and schemas.
-- Ship with a sample workspace tool (e.g. a todo API) to prove the contract.
-- Built-ins stay on the same interface; this milestone is "turn on the scan."
+### 4.1 Introduce an Event Bus (Mediator)
 
-### Deferred / not planned
+Replace `self.master.config` / `self.master.workspaces` and cross-panel callbacks with a **central event bus**. Components emit events and subscribe to events — they never reach into each other.
 
-- Retrieval/chunking for large wikis (revisit only if full-file injection breaks).
-- Anything beyond reading/writing the wiki and plugin-provided tools.
+```
+┌─────────────────────────────────────────────────┐
+│                   Event Bus                       │
+│  (publish / subscribe, typed events)             │
+├─────────────────────────────────────────────────┤
+│  Events:                                        │
+│  - WorkspaceSelected(workspace: Path)            │
+│  - FileOpened(path: Path)                        │
+│  - UserSent(message: str, attachments: [...])    │
+│  - AssistantReply(stream: Iterator[str])         │
+│  - ToolRequested(name: str, args: dict)          │
+│  - ToolResult(result: str)                       │
+└─────────────────────────────────────────────────┘
+        ▲                    ▲                    ▲
+        │                    │                    │
+  FileTreePanel      EditorPanel          ChatPanel
+```
+
+
+**Why this matters for your StableDiffusion fork:** you'd delete `ChatPanel` and `EditorPanel`, add an `ImageCanvas` and a `DiffusionPromptPanel`. None of the core services (workspaces, config, event bus) change. **This is the whole point of the framework.**
+
+### 4.2 The LLM Harness as a Service
+
+Currently the "harness" is spread across `chat_client.py` + `tools.py` + `context.py` + `agents.py`. For a framework, unify these into a single `Harness` service with a clean contract:
+
+```python
+class Harness(Protocol):
+    async def send(
+        self,
+        messages: list[dict],
+        tools: list[Tool],
+        workspace: Workspace | None,
+        stop_event: Event,
+    ) -> AsyncIterator[StreamEvent]:
+        ...
+```
+
+
+Where `StreamEvent` is a typed union: `Content(chunk) | Reasoning(chunk) | ToolCall(name, args) | ToolResult(name, text) | Done(text) | Error(exc)`.
+
+The harness is **backend-agnostic** — the `chat_client.py` OpenAI-compatible client is one backend. Adding Ollama, llama.cpp, or a StableDiffusion backend means adding a *new* harness implementation, not changing the UI.
+
+### 4.3 Concurrency Model (critical)
+
+The current code uses **threads + queues** (see `_stream_worker`, `_drain_queue` in ChatPanel). This is correct, but the wiring is buried inside the panel. Move it into the harness:
+
+- UI thread → publishes `UserSent` event → harness runs on worker thread.
+- Harness yields stream events → event bus marshals them back to the UI thread via `root.after(...)`.
+- **Never touch Tkinter from a worker thread.** The guidelines are explicit; the harness must own this discipline.
+
+---
+
+## 5. The Contracts (your deliverable #2)
+
+You said: *"what the components should be siloed, what the contracts are."* These are the **Python `Protocol`s** that define each boundary. Define these first, before writing implementation.
+
+| Contract | Between | Purpose |
+|----------|---------|---------|
+| `WorkspaceProvider` | MainWindow → WorkspaceManager | "What is the active knowledge base right now?" |
+| `ConfigStore` | All services → Config | Persistent JSON state, per-instance active selection |
+| `ChatHarness` | ChatPanel → Harness | "Send a message, stream the reply" |
+| `ToolRegistry` | Harness → Tools | "Which tools exist and how do they run?" |
+| `FileRepository` | Tree/Editor → FS | "List, read, write, create files in a workspace" |
+| `EventBus` | All panels | "Publish/subscribe cross-component messages" |
+| `DisplayRenderer` | Main → Display | "Render arbitrary content (md, image, etc.)" |
+
+**This is the key deliverable:** write each `Protocol` in a `contracts.py` module. Then `chat_client.py`, `tools.py`, `context.py` already satisfy several of them — verify and refactor to *explicitly* satisfy them.
+
+---
+
+## 6. Documentation Per Component (deliverable #3)
+
+Each framework component needs a doc with a consistent template. Propose this:
+
+```markdown
+## <Component>
+- **Purpose:** one paragraph
+- **Location:** kbl/<file>.py
+- **Inputs:** what it receives (typed)
+- **Outputs:** what it emits (typed)
+- **Dependencies:** what it may import/use (pure = no Tkinter)
+- **Events:** emits / subscribes
+- **Contracts it satisfies:** e.g. ConfigStore, ToolRegistry
+- **Testability:** how to test without a GUI
+- **Fork implications:** what breaks if you remove this panel?
+```
+
+
+For example, the **ChatPanel** doc must explicitly state: *"This is a **view**. It must never import or reach into file system logic. It only emits `UserSent` and renders `AssistantReply`."* That statement is what makes the StableDiffusion fork possible — you can delete this file entirely.
+
+---
+
+## 7. Milestones Toward the Framework
+
+| Phase | Focus | Outcome |
+|-------|-------|---------|
+| **F0** | Write all `contracts.py` Protocols | Boundaries defined on paper/code |
+| **F1** | Introduce `EventBus`, replace `self.master` cross-panel refs | Panels become decoupled |
+| **F2** | Extract harness from ChatPanel into `Harness` service | Concurrency lives in the harness, not the UI |
+| **F3** | Write per-component docs for all pure services | New devs/forks understand the system |
+| **F4** | Add a second harness (e.g., StableDiffusion backend) | Prove the framework is swappable |
+| **F5** | Add a second display type (image canvas) | Prove the display is pluggable |
+
+---
+
+## 8. Risks & Recommendations
+
+1. **`self.master` coupling is the #1 risk.** It's the single biggest barrier to the fork. Fix it first (F1).
+2. **Config is a process-wide singleton** (`_DEFAULT_INSTANCE`). This is intentional (tools need it) but couples tool execution to the running app. Keep it, but make it explicit in the `ConfigStore` contract.
+3. **The "harness" is currently 4 modules.** Consolidate into one service so the framework has a single "brain" entry point.
+4. **Pure services are your foundation.** `chat_client.py`, `tools.py`, `context.py`, `conversations.py` are already GUI-free. Protect them — never let Tkinter leak in.
+
