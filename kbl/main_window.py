@@ -13,6 +13,7 @@ except ImportError:
     TTKBOOTSTRAP_AVAILABLE = False
 
 from kbl import theme
+from kbl.events import EventBus, WorkspaceSelected
 from kbl.panels.chat import ChatPanel
 from kbl.panels.editor import EditorPanel
 from kbl.panels.file_tree import FileTreePanel
@@ -37,6 +38,7 @@ class MainWindow(tk.Tk):
         super().__init__()
         self.config = config
         self.workspaces = WorkspaceManager(config)
+        self.bus = EventBus()
 
         self.title("Knowledge Base Librarian")
         self.geometry("1280x820")
@@ -48,6 +50,7 @@ class MainWindow(tk.Tk):
         self._layout_var = tk.StringVar(value=config.data["layout"])
 
         self._build_panels()
+        self._wire_events()
         self._build_menus()
         self._apply_layout(config.data["layout"])
 
@@ -56,7 +59,7 @@ class MainWindow(tk.Tk):
 
         active = self.workspaces.active
         if active:
-            self.panels["tree"].set_workspace(active)
+            self.bus.emit(WorkspaceSelected(workspace=active))
 
     # ---- panels ----
 
@@ -64,16 +67,27 @@ class MainWindow(tk.Tk):
         # Note: ttkbootstrap uses Panedwindow (lowercase 'w'), not PanedWindow
         self._layout_widget = ttk.Panedwindow(self, orient="horizontal")
         self._layout_widget.pack(fill="both", expand=True)
-        self.panels["tree"] = FileTreePanel(self, on_open=self._open_file)
+        self.panels["tree"] = FileTreePanel(self, bus=self.bus)
         self.panels["editor"] = EditorPanel(self, config=self.config)
-        self.panels["chat"] = ChatPanel(
-            self,
-            on_configure_server=self._show_server_config,
-            on_manage_agents=self._show_agent_manager,
+        self.panels["chat"] = ChatPanel(self, config=self.config, bus=self.bus)
+
+    def _wire_events(self):
+        self.bus.subscribe("file_opened", self._on_file_opened)
+        self.bus.subscribe(
+            "server_config_requested", self._on_server_config_requested
+        )
+        self.bus.subscribe(
+            "agent_manager_requested", self._on_agent_manager_requested
         )
 
-    def _open_file(self, path):
-        self.panels["editor"].open(path)
+    def _on_file_opened(self, payload):
+        self.panels["editor"].open(payload.path)
+
+    def _on_server_config_requested(self, _payload=None):
+        self._show_server_config()
+
+    def _on_agent_manager_requested(self, _payload=None):
+        self._show_agent_manager()
 
     # ---- layout ----
 
@@ -323,8 +337,7 @@ class MainWindow(tk.Tk):
         # User-initiated switch: make it this instance's active workspace and
         # persist it as the default for future no---workspace launches.
         self.workspaces.set_active(path, persist_default=True)
-        self.panels["tree"].set_workspace(path)
-        self.panels["chat"]._on_workspace_changed()
+        self.bus.emit(WorkspaceSelected(workspace=Path(path)))
         self._update_workspace_menu()
 
     def _show_workspace_dialog(self):

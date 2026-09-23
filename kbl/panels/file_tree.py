@@ -11,13 +11,16 @@ except ImportError:
     from tkinter import ttk
 
 from kbl import theme
+from kbl.events import FileOpened, WorkspaceSelected
 
 
 class FileTreePanel(ttk.Frame):
-    def __init__(self, master, on_open):
+    def __init__(self, master, bus=None):
         super().__init__(master)
-        self.on_open = on_open
+        self.bus = bus
         self.workspace = None
+        if bus is not None:
+            bus.subscribe("workspace_selected", self._on_workspace_selected)
 
         bar = ttk.Frame(self)
         bar.pack(side="top", fill="x")
@@ -52,6 +55,9 @@ class FileTreePanel(ttk.Frame):
         self.workspace = Path(path)
         self.workspace_label.config(text=self.workspace.name)
         self.refresh()
+
+    def _on_workspace_selected(self, payload):
+        self.set_workspace(payload.workspace)
 
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
@@ -90,7 +96,13 @@ class FileTreePanel(ttk.Frame):
         if path.is_dir():
             self.tree.item(str(path), open=not self.tree.item(str(path), "open"))
         elif path.is_file():
-            self.on_open(path)
+            if self.bus is not None:
+                self.bus.emit(FileOpened(path))
+            else:
+                self._fallback_open(path)
+
+    def _fallback_open(self, path):
+        """Fallback when no bus is wired (kept for headless/tests)."""
 
     def _show_menu(self, event):
         item = self.tree.identify_row(event.y)
@@ -128,7 +140,10 @@ class FileTreePanel(ttk.Frame):
             return
         self.refresh()
         self._reveal(target)
-        self.on_open(target)
+        if self.bus is not None:
+            self.bus.emit(FileOpened(target))
+        else:
+            self._fallback_open(target)
 
     def new_folder(self):
         if self.workspace is None:

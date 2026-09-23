@@ -1,6 +1,5 @@
 """Chat panel: conversation history, input, send/stop, streaming replies."""
 
-import json
 import queue
 import re
 import threading
@@ -13,45 +12,45 @@ try:
 except ImportError:
     from tkinter import ttk
 
-from kbl import agents, harness, markdown_render, theme, tools as kbl_tools
+from kbl import agents, harness, theme
 from kbl.chat_client import ServerError, fetch_models
 from kbl.conversations import ConversationStore, workspace_id_for
+from kbl.events import (
+    AgentManagerRequested,
+    ServerConfigRequested,
+    WorkspaceSelected,
+)
+from kbl.panels.attach_popup import AttachPopup
+from kbl.panels.history_view import HistoryView
+from kbl.panels.input_keys import bind_input_keys
+from kbl.panels.message_dialogs import (
+    delete_message_dialog,
+    edit_message_dialog,
+)
 
 _MANAGE_AGENTS_LABEL = "Manage agents..."
 _ATTACH_RE = re.compile(r"@([^\s,.;:!?\"'()\[\]{}<>]+)")
-_TOOL_PREVIEW_LIMIT = 160
-_SUGGESTION_LIMIT = 30
 
 
 class ChatPanel(ttk.Frame):
-    def __init__(self, master, on_configure_server=None, on_manage_agents=None):
+    def __init__(self, master, config, bus=None):
         super().__init__(master)
-        self.on_configure_server = on_configure_server
-        self.on_manage_agents = on_manage_agents
+        self.config = config
+        self.bus = bus
+        self.workspace = None
+        if bus is not None:
+            bus.subscribe("workspace_selected", self._on_workspace_selected)
+
         self.conversation = []
         self._store = ConversationStore()
         self._conv_id = None
         self._conv_name = self._default_conversation_name()
-        self._message_blocks = []
-        self._message_buttons = []
-        self._content_start_mark = None
-        self._msg_seq = 0
         self._request_queue = queue.Queue()
         self._model_queue = queue.Queue()
         self._model_poll_active = False
         self._stop_event = None
         self._streaming = False
-        self._thinking_text = []
-        self._thinking_start = None
-        self._thinking_collapsed = False
-        self._thought_blocks = []
-        self._thought_seq = 0
         self._progress_done = False
-        self._suggest_popup = None
-        self._suggest_list = None
-        self._suggest_token_start = None
-        self._suggest_binding = None
-        self._dividers = []
 
         self._build()
         self._restyle()
@@ -109,10 +108,13 @@ class ChatPanel(ttk.Frame):
         self.pw = ttk.Panedwindow(self, orient="vertical")
         self.pw.pack(fill="both", expand=True, padx=4, pady=(4, 0))
 
-        self.history = tk.Text(self.pw, wrap="word", state="disabled")
-        theme.style_text(self.history)
-        self.history.bind("<Configure>", lambda e: self._resize_dividers())
-        self.pw.add(self.history, weight=1)
+        self.view = HistoryView(
+            self.pw,
+            on_edit=self._edit_message,
+            on_delete=self._delete_message,
+            stop_progress=self._stop_progress,
+        )
+        self.pw.add(self.view.widget, weight=1)
 
         entry_pane = ttk.Frame(self.pw)
         entry_row = ttk.Frame(entry_pane)
@@ -132,97 +134,16 @@ class ChatPanel(ttk.Frame):
 
         self.after_idle(self._init_sash)
 
+        self.popup = AttachPopup(
+            self.input, self._active_workspace, lambda: self._streaming
+        )
         self.input.bind("<Return>", self._on_return)
         self.input.bind("<Shift-Return>", lambda e: None)
-        self.input.bind("<KeyRelease>", self._maybe_show_suggestions)
-        self.input.bind("<Down>", self._on_suggest_down)
-        self.input.bind("<Up>", self._on_suggest_up)
-        self.input.bind("<Escape>", self._close_suggestions)
-        self._bind_input_keys()
-
-    def _bind_input_keys(self):
-        inp = self.input
-
-        def noop(event):
-            return "break"
-
-        def select_all(event):
-            inp.tag_add("sel", "1.0", "end")
-            return "break"
-
-        def copy(event):
-            try:
-                rng = inp.tag_ranges("sel")
-                if rng:
-                    inp.clipboard_clear()
-                    inp.clipboard_append(inp.get(rng[0], rng[1]))
-            except tk.TclError:
-                pass
-            return "break"
-
-        def cut(event):
-            try:
-                rng = inp.tag_ranges("sel")
-                if rng:
-                    inp.clipboard_clear()
-                    inp.clipboard_append(inp.get(rng[0], rng[1]))
-                    inp.delete(rng[0], rng[1])
-            except tk.TclError:
-                pass
-            return "break"
-
-        def paste(event):
-            try:
-                data = inp.clipboard_get()
-            except tk.TclError:
-                return "break"
-            if data:
-                inp.insert("insert", data)
-            return "break"
-
-        def undo(event):
-            try:
-                inp.edit_undo()
-            except tk.TclError:
-                pass
-            return "break"
-
-        def redo(event):
-            try:
-                inp.edit_redo()
-            except tk.TclError:
-                pass
-            return "break"
-
-        # Standard editing shortcuts, implemented directly so behaviour is
-        # consistent across platforms (Tk's emacs-style Control bindings are
-        # replaced rather than relied upon).
-        inp.bind("<Control-a>", select_all)
-        inp.bind("<Control-A>", select_all)
-        inp.bind("<Control-c>", copy)
-        inp.bind("<Control-C>", copy)
-        inp.bind("<Control-x>", cut)
-        inp.bind("<Control-X>", cut)
-        inp.bind("<Control-v>", paste)
-        inp.bind("<Control-V>", paste)
-        inp.bind("<Control-z>", undo)
-        inp.bind("<Control-Z>", undo)
-        inp.bind("<Control-y>", redo)
-        inp.bind("<Control-Y>", redo)
-        inp.bind("<Control-Shift-Z>", redo)
-        inp.bind("<Control-Shift-z>", redo)
-
-        # Neutralize the emacs-style Control-letter bindings Tk's Text widget
-        # enables by default (Ctrl+H/K/D/T/O) which feel out of place in a
-        # normal GUI editor.
-        for seq in (
-            "<Control-h>", "<Control-H>",
-            "<Control-k>", "<Control-K>",
-            "<Control-d>", "<Control-D>",
-            "<Control-t>", "<Control-T>",
-            "<Control-o>", "<Control-O>",
-        ):
-            inp.bind(seq, noop)
+        self.input.bind("<KeyRelease>", self.popup.maybe_show)
+        self.input.bind("<Down>", self.popup.down)
+        self.input.bind("<Up>", self.popup.up)
+        self.input.bind("<Escape>", self.popup.close)
+        bind_input_keys(self.input)
 
     def _init_sash(self):
         if len(self.pw.panes()) < 2:
@@ -232,41 +153,14 @@ class ChatPanel(ttk.Frame):
             self.pw.sashpos(0, max(60, total - 120))
 
     def _restyle(self):
-        theme.style_text(self.history)
+        self.view.restyle()
         theme.style_text(self.input)
-        markdown_render.setup_md_tags(self.history)
-        self.history.tag_configure(
-            "who", foreground=theme.PALETTE["accent"],
-            font=(theme.FAMILY, theme.SIZE, "bold"),
-        )
-        self.history.tag_configure(
-            "who_assistant",
-            foreground=theme.PALETTE["accent_hover"],
-            font=(theme.FAMILY, theme.SIZE, "bold"),
-        )
-        for _sep in self._dividers:
-            _sep.configure(bg=theme.PALETTE["border"])
-        self.history.tag_configure(
-            "think",
-            foreground=theme.PALETTE.get("chrome_text_dim", theme.PALETTE["chrome_text"]),
-            font=(theme.FAMILY, theme.SIZE, "italic"),
-        )
-        self.history.tag_configure(
-            "tool",
-            foreground=theme.PALETTE.get("accent", theme.PALETTE["chrome_text"]),
-            font=(theme.MONO_FAMILY, theme.SIZE),
-        )
-        self.history.tag_configure(
-            "tool_res",
-            foreground=theme.PALETTE.get("chrome_text_dim", theme.PALETTE["chrome_text"]),
-            font=(theme.MONO_FAMILY, theme.SIZE - 1),
-        )
         self._refresh_status()
 
     # ---- status / server ----
 
     def _refresh_status(self):
-        config = self.master.config
+        config = self.config
         server = (config.data.get("server") or "").strip()
         if server:
             self.status_var.set(server)
@@ -276,7 +170,7 @@ class ChatPanel(ttk.Frame):
     def _refresh_agents(self):
         names = agents.list_agents()
         self.agent_combo["values"] = names + [_MANAGE_AGENTS_LABEL]
-        current = agents.active_agent(self.master.config)
+        current = agents.active_agent(self.config)
         if current in names:
             self.agent_var.set(current)
 
@@ -288,17 +182,17 @@ class ChatPanel(ttk.Frame):
             return
         if not name:
             return
-        config = self.master.config
+        config = self.config
         config.data["active_agent"] = name
         config.save()
 
     def _restore_agent_selection(self):
-        current = agents.active_agent(self.master.config)
+        current = agents.active_agent(self.config)
         if current:
             self.agent_var.set(current)
 
     def _refresh_models(self):
-        config = self.master.config
+        config = self.config
         server = (config.data.get("server") or "").strip()
         if not server:
             current = (config.data.get("model") or "").strip()
@@ -330,7 +224,7 @@ class ChatPanel(ttk.Frame):
         self._apply_models(models)
 
     def _apply_models(self, models):
-        current = (self.master.config.data.get("model") or "").strip()
+        current = (self.config.data.get("model") or "").strip()
         values = list(models)
         if current and current not in values:
             values.insert(0, current)
@@ -342,7 +236,7 @@ class ChatPanel(ttk.Frame):
         model = self.model_var.get()
         if not model:
             return
-        config = self.master.config
+        config = self.config
         config.data["model"] = model
         config.save()
         self._refresh_status()
@@ -352,19 +246,19 @@ class ChatPanel(ttk.Frame):
         self._refresh_models()
 
     def _manage_agents(self):
-        if self.on_manage_agents:
-            self.on_manage_agents()
+        if self.bus is not None:
+            self.bus.emit(AgentManagerRequested())
 
     def _configure_server(self):
         self._stop()
-        if self.on_configure_server:
-            self.on_configure_server()
+        if self.bus is not None:
+            self.bus.emit(ServerConfigRequested())
 
     # ---- actions ----
 
     def _on_return(self, event):
-        if self._suggest_popup:
-            self._complete_suggestion()
+        if self.popup.active:
+            self.popup.complete()
             return "break"
         if event.state & 0x0001:
             self.input.insert("insert", "\n")
@@ -376,13 +270,13 @@ class ChatPanel(ttk.Frame):
     def _send(self):
         if self._streaming:
             return
-        config = self.master.config
+        config = self.config
         server = (config.data.get("server") or "").strip()
         model = (config.data.get("model") or "").strip()
         if not server or not model:
             self.status_var.set("Configure a server and model first.")
-            if self.on_configure_server:
-                self.on_configure_server()
+            if self.bus is not None:
+                self.bus.emit(ServerConfigRequested())
             return
         text = self.input.get("1.0", "end-1c").strip()
         if not text:
@@ -392,17 +286,17 @@ class ChatPanel(ttk.Frame):
         for attached in self._attached_messages(text):
             self.conversation.append(attached)
         self.conversation.append({"role": "user", "content": text})
-        self._append("User", text)
+        self.view.append("User", text, len(self.conversation) - 1)
         self.persist()
         self._refresh_convs()
         self._start_stream(server, model)
 
     def _active_workspace(self):
-        try:
-            workspace = self.master.workspaces.active
-        except AttributeError:
-            return None
-        return str(workspace) if workspace else None
+        return str(self.workspace) if self.workspace else None
+
+    def _on_workspace_selected(self, payload):
+        self.workspace = payload.workspace
+        self._on_workspace_changed()
 
     def _current_workspace_id(self):
         return workspace_id_for(self._active_workspace())
@@ -434,27 +328,21 @@ class ChatPanel(ttk.Frame):
                     "content": f"[Attached file: {token}]\n\n{contents}",
                 }
             )
-            self._append("Attached", token)
+            self.view.append("Attached", token)
         return attached
 
     def _start_stream(self, server, model):
-        api_key = (self.master.config.data.get("api_key") or "").strip()
+        api_key = (self.config.data.get("api_key") or "").strip()
         self._streaming = True
-        self._thinking_text = []
-        self._thinking_start = None
-        self._thinking_collapsed = False
         self._progress_done = False
-        self._content_start_mark = None
         self._stop_event = threading.Event()
+        self.view.reset_stream_state()
         self.send_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.progress.pack(side="left", padx=(8, 0))
         self.progress.start(20)
 
-        self.history.configure(state="normal")
-        self._maybe_divider()
-        self.history.insert("end", "\nAssistant:\n", "who_assistant")
-        self.history.configure(state="disabled")
+        self.view.start_stream()
 
         thread = threading.Thread(
             target=self._stream_worker,
@@ -473,7 +361,7 @@ class ChatPanel(ttk.Frame):
                 api_key,
                 self.conversation,
                 workspace=workspace,
-                config=self.master.config,
+                config=self.config,
                 stop_event=self._stop_event,
             ):
                 self._request_queue.put(event)
@@ -489,44 +377,20 @@ class ChatPanel(ttk.Frame):
             except queue.Empty:
                 break
             if kind == "reasoning":
-                self._append_thinking(value)
+                self.view.append_thinking(value)
             elif kind == "content":
-                self._append_stream(value)
+                self.view.append_stream(value)
             elif kind == "tool_call":
-                self._render_tool_call(value)
+                self.view.render_tool_call(value)
             elif kind == "tool_result":
-                self._render_tool_result(value)
+                self.view.render_tool_result(value)
             elif kind == "done":
                 self._finish_stream(value)
             elif kind == "error":
-                self._append("Error", value)
+                self.view.append("Error", value)
                 self._finish_stream("", error=True)
         if self._streaming:
             self.after(40, self._drain_queue)
-
-    def _append_thinking(self, piece):
-        self._stop_progress()
-        if self._thinking_start is None:
-            self._thinking_start = self.history.index("end-1c")
-        self._thinking_text.append(piece)
-        self.history.configure(state="normal")
-        self.history.insert("end", piece, "think")
-        self.history.see("end")
-        self.history.configure(state="disabled")
-
-    def _append_stream(self, piece):
-        self._stop_progress()
-        if not self._thinking_collapsed and self._thinking_text:
-            self._collapse_thinking()
-        self.history.configure(state="normal")
-        if self._content_start_mark is None:
-            self._msg_seq += 1
-            self._content_start_mark = f"_a{self._msg_seq}_s"
-            self.history.mark_set(self._content_start_mark, "end-1c")
-            self.history.mark_gravity(self._content_start_mark, "left")
-        self.history.insert("end", piece)
-        self.history.see("end")
-        self.history.configure(state="disabled")
 
     def _stop_progress(self):
         if self._progress_done:
@@ -535,79 +399,13 @@ class ChatPanel(ttk.Frame):
         self.progress.stop()
         self.progress.pack_forget()
 
-    def _collapse_thinking(self):
-        self._thinking_collapsed = True
-        self._stop_progress()
-        thinking = "".join(self._thinking_text)
-        if not thinking:
-            return
-        seq = self._thought_seq
-        self._thought_seq += 1
-        anchor = self._thinking_start
-        toggle = ttk.Button(self.history, text=f"Thought process \u25b8{seq}")
-        toggle.configure(command=lambda b=seq: self._toggle_thought(b))
-        self._thought_blocks.append(
-            {"seq": seq, "button": toggle, "text": thinking,
-             "mark": f"_thought{seq}", "shown": False}
-        )
-        self.history.configure(state="normal")
-        self.history.delete(anchor, "end")
-        self.history.window_create(anchor, window=toggle)
-        self.history.mark_set(f"_thought{seq}", f"{anchor} + 1c")
-        self.history.mark_gravity(f"_thought{seq}", "left")
-        self.history.configure(state="disabled")
-
-    def _toggle_thought(self, seq):
-        block = next(b for b in self._thought_blocks if b["seq"] == seq)
-        insert_at = self.history.index(block["mark"])
-        self.history.configure(state="normal")
-        if block["shown"]:
-            end = self.history.index(f"{insert_at} + {len(block['text'])}c")
-            self.history.delete(insert_at, end)
-            block["shown"] = False
-            block["button"].configure(text=f"Thought process \u25b8{seq}")
-        else:
-            self.history.insert(insert_at, block["text"], "think")
-            block["shown"] = True
-            block["button"].configure(text=f"Thought process \u25be{seq}")
-        self.history.see(insert_at)
-        self.history.configure(state="disabled")
-
     def _finish_stream(self, assistant_text, error=False):
         self._streaming = False
         self._stop_event = None
         self.send_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self._stop_progress()
-        self.history.configure(state="normal")
-        if (
-            self._content_start_mark is not None
-            and self.conversation
-            and self.conversation[-1].get("role") == "assistant"
-            and self.conversation[-1].get("content")
-        ):
-            end_mark = f"_a{self._msg_seq}_e"
-            self.history.mark_set(end_mark, "end-1c")
-            self.history.mark_gravity(end_mark, "left")
-            start = self.history.index(self._content_start_mark)
-            end = self.history.index(f"{end_mark} + 1c")
-            body = self.history.get(start, end)
-            self.history.delete(start, end)
-            markdown_render.append_md(self.history, body)
-            self.history.mark_set(end_mark, "end-1c")
-            self.history.mark_gravity(end_mark, "left")
-            self._message_blocks.append(
-                {
-                    "role": "assistant",
-                    "conv_index": len(self.conversation) - 1,
-                    "start_mark": self._content_start_mark,
-                    "end_mark": end_mark,
-                }
-            )
-            self._add_edit_footer(len(self.conversation) - 1, "assistant")
-        self.history.insert("end", "\n")
-        self.history.see("end")
-        self.history.configure(state="disabled")
+        self.view.finish(self.conversation)
         self.persist()
         self._refresh_convs()
 
@@ -619,164 +417,40 @@ class ChatPanel(ttk.Frame):
         self.stop_button.configure(state="disabled")
         self._stop_progress()
 
-    # ---- history helpers ----
-
-    def _append(self, who, text, conv_index=None):
-        self.history.configure(state="normal")
-        self._maybe_divider()
-        self.history.insert("end", "\n")
-        if who:
-            self.history.insert("end", f"{who}: ", "who")
-        start = self.history.index("end-1c")
-        if text:
-            if who == "User":
-                markdown_render.append_md(self.history, text)
-            else:
-                self.history.insert("end", text)
-        end = self.history.index("end-1c")
-        if who == "User" and text:
-            self._msg_seq += 1
-            start_mark = f"_m{self._msg_seq}_s"
-            end_mark = f"_m{self._msg_seq}_e"
-            self.history.mark_set(start_mark, start)
-            self.history.mark_gravity(start_mark, "left")
-            self.history.mark_set(end_mark, end)
-            self.history.mark_gravity(end_mark, "left")
-            ci = conv_index if conv_index is not None else len(self.conversation) - 1
-            self._message_blocks.append(
-                {
-                    "role": "user",
-                    "conv_index": ci,
-                    "start_mark": start_mark,
-                    "end_mark": end_mark,
-                }
-            )
-            self._add_edit_footer(ci, "user")
-        self.history.see("end")
-        self.history.configure(state="disabled")
-
-    # ---- message dividers + input resize ----
-
-    def _maybe_divider(self):
-        if self.history.compare("end-1c", ">", "1.0"):
-            self._insert_divider()
-
-    def _insert_divider(self):
-        sep = tk.Frame(self.history, height=1, relief="flat", bd=0)
-        sep.configure(bg=theme.PALETTE["border"])
-        self.history.window_create("end", window=sep, pady=6)
-        self._dividers.append(sep)
-        self._resize_dividers()
-
-    def _resize_dividers(self):
-        width = self.history.winfo_width() - 32
-        if width < 1:
-            return
-        for sep in self._dividers:
-            sep.configure(width=width)
-
     # ---- message editing ----
 
-    def _add_edit_footer(self, conv_index, role):
-        footer = ttk.Frame(self.history)
-        ttk.Button(
-            footer,
-            text="Edit",
-            takefocus=0,
-            command=lambda ci=conv_index, r=role: self._edit_message(ci, r),
-        ).pack(side="left", padx=(0, 4))
-        ttk.Button(
-            footer,
-            text="Delete",
-            takefocus=0,
-            command=lambda ci=conv_index: self._delete_message(ci),
-        ).pack(side="left")
-        self.history.window_create("end", window=footer)
-        self.history.insert("end", "\n")
-        self._message_buttons.append(footer)
-
     def _edit_message(self, conv_index, role):
-        if self._streaming or conv_index >= len(self.conversation):
-            return
-        current = self.conversation[conv_index].get("content") or ""
-
-        dialog = tk.Toplevel(self)
-        dialog.title(f"Edit {role} message")
-        dialog.transient(self)
-        dialog.grab_set()
-
-        text = tk.Text(dialog, wrap="word", width=70, height=20)
-        theme.style_text(text)
-        text.pack(fill="both", expand=True, padx=8, pady=8)
-        text.insert("1.0", current)
-        text.focus_set()
-        text.tag_add("sel", "1.0", "end-1c")
-
-        row = ttk.Frame(dialog)
-        row.pack(fill="x", padx=8, pady=(0, 8))
-
-        def _save():
-            new = text.get("1.0", "end-1c")
-            self.conversation[conv_index]["content"] = new
+        def _commit(new_content):
+            self.conversation[conv_index]["content"] = new_content
             self.persist()
-            view = self.history.yview()
-            self._render_history()
-            self.history.yview_moveto(view[0])
-            dialog.destroy()
+            view = self.view.widget.yview()
+            self.view.render_history(self.conversation)
+            self.view.widget.yview_moveto(view[0])
 
-        def _cancel():
-            dialog.destroy()
-
-        ttk.Button(row, text="Cancel", command=_cancel).pack(
-            side="right", padx=(4, 0)
+        edit_message_dialog(
+            self,
+            self.conversation,
+            conv_index,
+            role,
+            on_commit=_commit,
+            stream_check=lambda: self._streaming,
         )
-        ttk.Button(
-            row, text="Save", style="Accent.TButton", command=_save
-        ).pack(side="right")
-        dialog.bind("<Escape>", lambda e: _cancel())
 
     def _delete_message(self, conv_index):
-        if self._streaming or not (0 <= conv_index < len(self.conversation)):
-            return
-
-        dialog = tk.Toplevel(self)
-        dialog.title("Delete messages")
-        dialog.transient(self)
-        dialog.grab_set()
-
-        following = len(self.conversation) - conv_index - 1
-        if following:
-            detail = (
-                f"Delete this message and the {following} message(s) "
-                f"after it? This cannot be undone."
-            )
-        else:
-            detail = "Delete this message? This cannot be undone."
-        ttk.Label(dialog, text=detail, wraplength=320, justify="left").pack(
-            padx=12, pady=12
+        delete_message_dialog(
+            self,
+            self.conversation,
+            conv_index,
+            on_confirm=lambda: self._delete_from(conv_index),
+            stream_check=lambda: self._streaming,
         )
 
-        row = ttk.Frame(dialog)
-        row.pack(fill="x", padx=12, pady=(0, 12))
-
-        def _confirm():
-            del self.conversation[conv_index:]
-            self.persist()
-            view = self.history.yview()
-            self._render_history()
-            self.history.yview_moveto(view[0])
-            dialog.destroy()
-
-        def _cancel():
-            dialog.destroy()
-
-        ttk.Button(row, text="Cancel", command=_cancel).pack(
-            side="right", padx=(4, 0)
-        )
-        ttk.Button(
-            row, text="Delete", style="Accent.TButton", command=_confirm
-        ).pack(side="right")
-        dialog.bind("<Escape>", lambda e: _cancel())
+    def _delete_from(self, conv_index):
+        del self.conversation[conv_index:]
+        self.persist()
+        view = self.view.widget.yview()
+        self.view.render_history(self.conversation)
+        self.view.widget.yview_moveto(view[0])
 
     # ---- conversation store ----
 
@@ -803,7 +477,7 @@ class ChatPanel(ttk.Frame):
     def _restore_conversation(self):
         self._refresh_convs()
         workspace_id = self._current_workspace_id()
-        active = self.master.config.data.get("active_conversation") or {}
+        active = self.config.data.get("active_conversation") or {}
         active_id = (active.get(workspace_id) or "").strip()
         if not active_id:
             return
@@ -813,7 +487,7 @@ class ChatPanel(ttk.Frame):
         self.conversation = data.get("messages") or []
         self._conv_id = data["id"]
         self._conv_name = data.get("name") or data["id"]
-        self._render_history()
+        self.view.render_history(self.conversation)
         self._refresh_convs()
 
     def _on_conv_selected(self, _event=None):
@@ -837,7 +511,7 @@ class ChatPanel(ttk.Frame):
         self.conversation = data.get("messages") or []
         self._conv_id = data["id"]
         self._conv_name = data.get("name") or data["id"]
-        self._render_history()
+        self.view.render_history(self.conversation)
         self._refresh_convs()
         self._update_active_conversation()
 
@@ -850,7 +524,7 @@ class ChatPanel(ttk.Frame):
         self.conversation = []
         self._conv_id = None
         self._conv_name = self._default_conversation_name()
-        self._render_history()
+        self.view.render_history(self.conversation)
         self._refresh_convs()
         self._update_active_conversation()
 
@@ -862,7 +536,7 @@ class ChatPanel(ttk.Frame):
         self.conversation = []
         self._conv_id = None
         self._conv_name = self._default_conversation_name()
-        self._render_history()
+        self.view.render_history(self.conversation)
         self._refresh_convs()
         self._restore_conversation()
 
@@ -893,7 +567,7 @@ class ChatPanel(ttk.Frame):
         self._refresh_convs()
 
     def _update_active_conversation(self):
-        config = self.master.config
+        config = self.config
         active = config.data.get("active_conversation")
         if not isinstance(active, dict):
             active = {}
@@ -913,223 +587,3 @@ class ChatPanel(ttk.Frame):
             conversation, self._current_workspace_id()
         )
         self._update_active_conversation()
-
-    def _render_history(self):
-        self.history.configure(state="normal")
-        for btn in self._message_buttons:
-            btn.destroy()
-        self._message_buttons = []
-        self.history.delete("1.0", "end")
-        self.history.configure(state="disabled")
-        self._message_blocks = []
-        self._thought_blocks = []
-        self._dividers = []
-        self._thinking_text = []
-        self._thinking_start = None
-        self._thinking_collapsed = False
-        self._content_start_mark = None
-        self._msg_seq = 0
-        self._thought_seq = 0
-        for index, message in enumerate(self.conversation):
-            role = message.get("role")
-            content = message.get("content")
-            if role == "user":
-                match = re.match(r"^\[Attached file: ([^\]]+)\]", content or "")
-                if match:
-                    self._append("Attached", match.group(1))
-                elif content:
-                    self._append("User", content, index)
-            elif role == "assistant" and isinstance(content, str) and content:
-                self._render_assistant(index, content)
-
-    def _render_assistant(self, conv_index, content):
-        self.history.configure(state="normal")
-        self._maybe_divider()
-        self.history.insert("end", "\nAssistant:\n", "who_assistant")
-        start = self.history.index("end-1c")
-        self._msg_seq += 1
-        start_mark = f"_a{self._msg_seq}_s"
-        self.history.mark_set(start_mark, start)
-        self.history.mark_gravity(start_mark, "left")
-        markdown_render.append_md(self.history, content)
-        end_mark = f"_a{self._msg_seq}_e"
-        self.history.mark_set(end_mark, "end-1c")
-        self.history.mark_gravity(end_mark, "left")
-        self._message_blocks.append(
-            {
-                "role": "assistant",
-                "conv_index": conv_index,
-                "start_mark": start_mark,
-                "end_mark": end_mark,
-            }
-        )
-        self._add_edit_footer(conv_index, "assistant")
-        self.history.see("end")
-        self.history.configure(state="disabled")
-
-    # ---- tool call rendering ----
-
-    def _render_tool_call(self, call):
-        self._stop_progress()
-        name = call.get("name") or "?"
-        try:
-            args = json.loads(call.get("arguments") or "{}")
-        except (ValueError, TypeError):
-            args = None
-        if isinstance(args, dict) and args:
-            shown = ", ".join(f"{k}={v!r}" for k, v in args.items())
-        else:
-            shown = ""
-        self.history.configure(state="normal")
-        self.history.insert("end", f"\n  \u2192 {name}({shown})", "tool")
-        self.history.see("end")
-        self.history.configure(state="disabled")
-
-    def _render_tool_result(self, call_result):
-        _call, result = call_result
-        preview = " ".join((result or "").split())
-        if len(preview) > _TOOL_PREVIEW_LIMIT:
-            preview = preview[:_TOOL_PREVIEW_LIMIT] + "\u2026"
-        if not preview:
-            return
-        self.history.configure(state="normal")
-        self.history.insert("end", f"\n    {preview}", "tool_res")
-        self.history.see("end")
-        self.history.configure(state="disabled")
-
-    # ---- @-mention file suggestions ----
-
-    def _suggestion_token(self):
-        insert = self.input.index("insert")
-        line = insert.split(".")[0]
-        line_text = self.input.get(f"{line}.0", "insert")
-        idx = line_text.rfind("@")
-        if idx < 0:
-            return None, None, None
-        return line_text[idx + 1 :], f"{line}.{idx}", insert
-
-    def _maybe_show_suggestions(self, event=None):
-        if self._streaming:
-            self._close_suggestions()
-            return
-        workspace = self._active_workspace()
-        if not workspace:
-            self._close_suggestions()
-            return
-        token, start, _insert = self._suggestion_token()
-        if token is None or " " in token:
-            self._close_suggestions()
-            return
-        try:
-            files = kbl_tools.list_md_files(workspace)
-        except Exception:
-            self._close_suggestions()
-            return
-        lower = token.lower()
-        items = [
-            f for f in files if f.lower().startswith(lower)
-        ][:_SUGGESTION_LIMIT]
-        if not items:
-            self._close_suggestions()
-            return
-        self._show_suggestions(items, start)
-
-    def _show_suggestions(self, items, token_start):
-        self._close_suggestions()
-        top = tk.Toplevel(self)
-        top.withdraw()
-        top.overrideredirect(True)
-        listbox = tk.Listbox(
-            top,
-            exportselection=False,
-            activestyle="dotbox",
-            height=min(len(items), 8),
-            width=max((len(i) for i in items), default=20) + 2,
-        )
-        theme.style_listbox(listbox)
-        listbox.pack(fill="both", expand=True)
-        for item in items:
-            listbox.insert("end", item)
-        listbox.selection_set(0)
-        listbox.activate(0)
-        listbox.bind("<ButtonRelease-1>", lambda e: self._complete_suggestion())
-        listbox.bind("<Double-Button-1>", lambda e: self._complete_suggestion())
-        self._suggest_popup = top
-        self._suggest_list = listbox
-        self._suggest_token_start = token_start
-        self._suggest_binding = self.bind_all("<Button-1>", self._on_popup_click)
-        try:
-            x, y, _w, h = self.input.bbox("insert")
-        except tk.TclError:
-            x, y, _w, h = 0, 0, 0, 0
-        top.geometry(
-            f"+{self.input.winfo_rootx() + x}"
-            f"+{self.input.winfo_rooty() + y + h}"
-        )
-        top.deiconify()
-        top.lift()
-
-    def _on_popup_click(self, event):
-        if self._suggest_popup is None:
-            return
-        widget = event.widget
-        while widget is not None:
-            if widget is self._suggest_popup:
-                return
-            widget = widget.master
-        self._close_suggestions()
-
-    def _complete_suggestion(self):
-        if self._suggest_popup is None:
-            return
-        selection = self._suggest_list.curselection()
-        if not selection:
-            self._close_suggestions()
-            return
-        path = self._suggest_list.get(selection[0])
-        start = self._suggest_token_start
-        self.input.delete(start, "insert")
-        self.input.insert(start, path)
-        self._close_suggestions()
-
-    def _close_suggestions(self, _event=None):
-        if self._suggest_popup is not None:
-            try:
-                self._suggest_popup.destroy()
-            except tk.TclError:
-                pass
-        if self._suggest_binding is not None:
-            try:
-                self.unbind_all(self._suggest_binding)
-            except tk.TclError:
-                pass
-        self._suggest_popup = None
-        self._suggest_list = None
-        self._suggest_token_start = None
-        self._suggest_binding = None
-
-    def _on_suggest_down(self, _event=None):
-        if self._suggest_popup is None:
-            return None
-        listbox = self._suggest_list
-        selection = listbox.curselection()
-        index = selection[0] if selection else 0
-        if index < listbox.size() - 1:
-            listbox.selection_clear(0, "end")
-            listbox.selection_set(index + 1)
-            listbox.activate(index + 1)
-            listbox.see(index + 1)
-        return "break"
-
-    def _on_suggest_up(self, _event=None):
-        if self._suggest_popup is None:
-            return None
-        listbox = self._suggest_list
-        selection = listbox.curselection()
-        index = selection[0] if selection else 0
-        if index > 0:
-            listbox.selection_clear(0, "end")
-            listbox.selection_set(index - 1)
-            listbox.activate(index - 1)
-            listbox.see(index - 1)
-        return "break"
