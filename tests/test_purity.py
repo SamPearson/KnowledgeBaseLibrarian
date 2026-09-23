@@ -16,6 +16,7 @@ PURE_SERVICES = [
     "config",
     "context",
     "conversations",
+    "harness",
     "tools",
     "toolstore",
     "workspaces",

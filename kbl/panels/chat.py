@@ -13,15 +13,11 @@ try:
 except ImportError:
     from tkinter import ttk
 
-from kbl import agents, context, markdown_render, theme, tools as kbl_tools, toolstore
-from kbl.chat_client import ServerError, chat_stream, fetch_models
+from kbl import agents, harness, markdown_render, theme, tools as kbl_tools
+from kbl.chat_client import ServerError, fetch_models
 from kbl.conversations import ConversationStore, workspace_id_for
 
 _MANAGE_AGENTS_LABEL = "Manage agents..."
-# Default cap on tool-call rounds for an agent loop. Users can override this in
-# the server config dialog; the value is read per-request in
-# ChatPanel._max_tool_rounds().
-_DEFAULT_MAX_TOOL_ROUNDS = 8
 _ATTACH_RE = re.compile(r"@([^\s,.;:!?\"'()\[\]{}<>]+)")
 _TOOL_PREVIEW_LIMIT = 160
 _SUGGESTION_LIMIT = 30
@@ -470,113 +466,19 @@ class ChatPanel(ttk.Frame):
 
     def _stream_worker(self, server, model, api_key):
         workspace = self._active_workspace()
-        collection = toolstore.collect_tools(workspace, self.master.config)
-        tool_list = list(collection.enabled_tools)
-        system_prompt = context.compose_system(
-            agents.get_prompt(agents.active_agent(self.master.config)),
-            context.workspace_instructions(workspace),
-            tool_list,
-            skills=collection.skills,
-        )
-        messages = [{"role": "system", "content": system_prompt}] + list(
-            self.conversation
-        )
-        tool_messages = []
-        content_parts = []
-        call_seq = 0
-        max_rounds = self._max_tool_rounds()
         try:
-            for _round in range(max_rounds):
-                calls = None
-                for kind, piece in chat_stream(
-                    server,
-                    model,
-                    messages + tool_messages,
-                    api_key,
-                    self._stop_event,
-                    tools=tool_list,
-                ):
-                    if kind == "tool_calls":
-                        calls = piece
-                        continue
-                    if kind == "content":
-                        content_parts.append(piece)
-                    self._request_queue.put((kind, piece))
-                if calls is None:
-                    break
-                if self._stop_event is not None and self._stop_event.is_set():
-                    break
-                normalized = []
-                for call in calls:
-                    normalized.append(self._normalize_call(call, call_seq))
-                    call_seq += 1
-                tool_messages.append(self._assistant_tool_message(normalized))
-                for call in normalized:
-                    result = kbl_tools.run_tool(
-                        tool_list, call["name"], call["arguments"]
-                    )
-                    self._request_queue.put(("tool_call", call))
-                    self._request_queue.put(("tool_result", (call, result)))
-                    tool_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call["id"],
-                            "content": result,
-                        }
-                    )
-            else:
-                self._request_queue.put(
-                    f"Stopped after {max_rounds} tool rounds."
-                )
-                return
-            final_text = "".join(content_parts)
-            if self._stop_event is None or not self._stop_event.is_set():
-                self.conversation.extend(tool_messages)
-                if final_text:
-                    self.conversation.append(
-                        {"role": "assistant", "content": final_text}
-                    )
-            self._request_queue.put(("done", final_text))
+            for event in harness.orchestrate(
+                server,
+                model,
+                api_key,
+                self.conversation,
+                workspace=workspace,
+                config=self.master.config,
+                stop_event=self._stop_event,
+            ):
+                self._request_queue.put(event)
         except Exception as exc:
             self._request_queue.put(("error", str(exc)))
-
-    def _max_tool_rounds(self):
-        """Tool-call round cap for an agent loop, from user config.
-
-        The app lets you raise this in the server config dialog for longer
-        research tasks with agent models. Falls back to a sane default when the
-        configured value is missing, non-integer, or below one (a loop of a
-        single round is pointless).
-        """
-        try:
-            value = int(self.master.config.data.get("max_tool_rounds") or 0)
-        except (TypeError, ValueError):
-            value = 0
-        return value if value >= 1 else _DEFAULT_MAX_TOOL_ROUNDS
-
-    def _normalize_call(self, call, seq):
-        return {
-            "id": call.get("id") or f"call_{seq}",
-            "name": call.get("name") or "",
-            "arguments": call.get("arguments") or "{}",
-        }
-
-    def _assistant_tool_message(self, calls):
-        return {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": call["id"],
-                    "type": "function",
-                    "function": {
-                        "name": call["name"],
-                        "arguments": call["arguments"],
-                    },
-                }
-                for call in calls
-            ],
-        }
 
     # ---- queue draining (UI thread) ----
 
