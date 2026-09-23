@@ -55,8 +55,13 @@ def build_request(config, workspace=None):
     """Resolve the environment for one send: tool list + composed system prompt."""
     collection = toolstore.collect_tools(workspace, config)
     tool_list = list(collection.enabled_tools)
+    active = agents.active_agent(config)
+    agent = agents.load_agent(active)
+    if agent.allowed_tools is not None:
+        allowed = set(agent.allowed_tools)
+        tool_list = [t for t in tool_list if t.name in allowed]
     system_prompt = context.compose_system(
-        agents.get_prompt(agents.active_agent(config)),
+        agents.get_prompt(active),
         context.workspace_instructions(workspace),
         tool_list,
         skills=collection.skills,

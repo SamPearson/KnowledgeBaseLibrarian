@@ -1,6 +1,7 @@
 """Agent manager dialog: create, edit, delete, and select system prompts."""
 
 import tkinter as tk
+from dataclasses import replace
 from tkinter import messagebox, simpledialog
 
 try:
@@ -74,6 +75,19 @@ class AgentManagerDialog(tk.Toplevel):
         right.pack(side="left", fill="both", expand=True)
         self.editor_title = ttk.Label(right, text="System Prompt", style="Dim.TLabel")
         self.editor_title.pack(anchor="w")
+
+        delegation_row = ttk.Frame(right)
+        delegation_row.pack(fill="x", pady=(4, 0))
+        ttk.Label(
+            delegation_row,
+            text="Can delegate to (comma-separated):",
+            style="Dim.TLabel",
+        ).pack(side="left")
+        self.delegation_var = tk.StringVar()
+        ttk.Entry(delegation_row, textvariable=self.delegation_var).pack(
+            side="left", fill="x", expand=True, padx=(8, 0)
+        )
+
         edit_frame = ttk.Frame(right)
         edit_frame.pack(fill="both", expand=True, pady=(4, 8))
         self.prompt_text = tk.Text(edit_frame, wrap="word", undo=True)
@@ -126,6 +140,7 @@ class AgentManagerDialog(tk.Toplevel):
 
     def _clear_editor(self):
         self.prompt_text.delete("1.0", "end")
+        self.delegation_var.set("")
         self.editor_title.configure(text="System Prompt")
 
     def _on_select(self):
@@ -136,6 +151,9 @@ class AgentManagerDialog(tk.Toplevel):
         self.prompt_text.delete("1.0", "end")
         self.prompt_text.insert("1.0", agents.get_prompt(name).rstrip("\n"))
         self.editor_title.configure(text=f"System Prompt  ({name})")
+        self.delegation_var.set(
+            ", ".join(agents.load_agent(name).can_delegate_to)
+        )
 
     # ---- operations ----
 
@@ -209,8 +227,20 @@ class AgentManagerDialog(tk.Toplevel):
         if not name:
             return
         prompt = self.prompt_text.get("1.0", "end-1c")
+        can_delegate_to = [
+            token.strip()
+            for token in self.delegation_var.get().split(",")
+            if token.strip()
+        ]
         try:
             agents.set_prompt(name, prompt)
+            agents.save_metadata(
+                name,
+                replace(
+                    agents.load_agent(name),
+                    can_delegate_to=can_delegate_to,
+                ),
+            )
         except agents.AgentError as exc:
             messagebox.showerror("Save", str(exc), parent=self)
             return

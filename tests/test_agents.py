@@ -107,3 +107,105 @@ def test_active_agent_seeds_default(kbl_dirs, tmp_config):
 def test_active_agent_blank_config(kbl_dirs, tmp_config):
     tmp_config.data["active_agent"] = ""
     assert agents.active_agent(tmp_config) == agents.DEFAULT_AGENT
+
+
+# ---- M4: metadata (agent.json) + AgentRegistry ----
+
+def test_load_agent_defaults_without_metadata(kbl_dirs):
+    agents.create_agent("plain")
+    agent = agents.load_agent("plain")
+    assert agent.id == "plain"
+    assert agent.prompt_path == kbl_dirs[0] / "plain" / agents.PROMPT_FILE
+    assert agent.description is None
+    assert agent.role is None
+    assert agent.allowed_tools is None
+    assert agent.parent is None
+    assert agent.can_delegate_to == []
+    assert agent.max_turns == agents.DEFAULT_MAX_TURNS
+    assert agent.max_depth == agents.DEFAULT_MAX_DEPTH
+    assert not agents.metadata_path("plain").exists()
+
+
+def test_load_agent_missing_raises(kbl_dirs):
+    with pytest.raises(agents.AgentError):
+        agents.load_agent("nope")
+
+
+def test_save_and_reload_metadata(kbl_dirs):
+    agents.create_agent("coder")
+    agent = agents.load_agent("coder")
+    agent.role = "python expert"
+    agent.allowed_tools = ["read_file", "search_files"]
+    agent.can_delegate_to = ["assistant"]
+    agent.max_turns = 12
+    agent.max_depth = 2
+    agents.save_metadata("coder", agent)
+
+    assert agents.metadata_path("coder").is_file()
+    reloaded = agents.load_agent("coder")
+    assert reloaded.role == "python expert"
+    assert reloaded.allowed_tools == ["read_file", "search_files"]
+    assert reloaded.can_delegate_to == ["assistant"]
+    assert reloaded.max_turns == 12
+    assert reloaded.max_depth == 2
+    assert agents.get_prompt("coder") == agents.DEFAULT_SYSTEM_PROMPT + "\n"
+
+
+def test_save_metadata_does_not_require_prompt_copy(kbl_dirs):
+    agents.create_agent("coder")
+    metadata = agents.load_agent("coder")
+    agents.save_metadata("coder", metadata)
+    assert agents.get_prompt("coder").strip()
+
+
+def test_registry_list_returns_agent_objects(kbl_dirs):
+    agents.create_agent("beta")
+    agents.create_agent("alpha")
+    items = agents.AgentRegistry().list_agents()
+    assert [a.id for a in items] == ["alpha", "beta"]
+    assert all(isinstance(a, agents.Agent) for a in items)
+
+
+def test_registry_get(kbl_dirs):
+    agents.create_agent("gamma")
+    assert agents.AgentRegistry().get("gamma").id == "gamma"
+
+
+def test_registry_active_matches_active_agent(kbl_dirs, tmp_config):
+    agents.create_agent("primary")
+    agents.create_agent("secondary")
+    tmp_config.data["active_agent"] = "secondary"
+    assert agents.AgentRegistry().active(tmp_config) == "secondary"
+
+
+def test_registry_can_delegate_to_direct(kbl_dirs):
+    agents.create_agent("solo")
+    solo = agents.load_agent("solo")
+    solo.can_delegate_to = ["assistant"]
+    agents.save_metadata("solo", solo)
+    assert agents.AgentRegistry().can_delegate_to("solo") == ["assistant"]
+
+
+def test_registry_can_delegate_to_resolves_chain(kbl_dirs):
+    agents.create_agent("root")
+    agents.create_agent("mid")
+    agents.create_agent("leaf")
+    mid = agents.load_agent("mid")
+    mid.can_delegate_to = ["leaf"]
+    agents.save_metadata("mid", mid)
+    root = agents.load_agent("root")
+    root.can_delegate_to = ["mid"]
+    agents.save_metadata("root", root)
+    assert agents.AgentRegistry().can_delegate_to("root") == ["mid", "leaf"]
+
+
+def test_registry_can_delegate_to_is_cycle_safe(kbl_dirs):
+    agents.create_agent("cyc_a")
+    agents.create_agent("cyc_b")
+    a = agents.load_agent("cyc_a")
+    a.can_delegate_to = ["cyc_b"]
+    agents.save_metadata("cyc_a", a)
+    b = agents.load_agent("cyc_b")
+    b.can_delegate_to = ["cyc_a"]
+    agents.save_metadata("cyc_b", b)
+    assert agents.AgentRegistry().can_delegate_to("cyc_a") == ["cyc_b", "cyc_a"]

@@ -8,7 +8,7 @@ round based on how many tool messages are already queued.
 
 import threading
 
-from kbl import harness
+from kbl import agents, harness
 from kbl.tools import Tool
 
 _ADD = {
@@ -153,6 +153,28 @@ def test_build_request_from_config(monkeypatch, tmp_config, workspace, kbl_dirs)
     assert "## Workspace" in system_prompt
     assert "## Tools" in system_prompt
     assert "- list_files:" in system_prompt
+
+
+def test_build_request_applies_agent_allowlist(tmp_config, workspace, kbl_dirs):
+    agents.create_agent("restricted")
+    agent = agents.load_agent("restricted")
+    agent.allowed_tools = ["read_file"]
+    agents.save_metadata("restricted", agent)
+    tmp_config.data["active_agent"] = "restricted"
+
+    system_prompt, tool_list = harness.build_request(tmp_config, str(workspace))
+    names = [t.name for t in tool_list]
+    tools_section = system_prompt.split("## Tools", 1)[1]
+    assert "read_file" in names
+    assert "list_files" not in names and "search_files" not in names
+    assert "- read_file(" in tools_section
+    assert "list_files" not in tools_section
+
+
+def test_build_request_default_agent_gets_all_tools(tmp_config, workspace, kbl_dirs):
+    system_prompt, tool_list = harness.build_request(tmp_config, str(workspace))
+    names = [t.name for t in tool_list]
+    assert "list_files" in names and "read_file" in names
 
 
 def test_orchestrate_uses_config_when_parts_missing(monkeypatch, tmp_config, workspace, kbl_dirs):
