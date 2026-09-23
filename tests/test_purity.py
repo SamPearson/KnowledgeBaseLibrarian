@@ -15,6 +15,7 @@ PURE_SERVICES = [
     "chat_client",
     "config",
     "context",
+    "contracts",
     "conversations",
     "harness",
     "tools",

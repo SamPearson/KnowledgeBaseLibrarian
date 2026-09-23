@@ -9,6 +9,7 @@ import tkinter.font as tkfont
 import unicodedata
 
 from kbl import theme
+from kbl.contracts import DisplayRenderer
 
 try:
     import markdown as _markdown
@@ -267,6 +268,26 @@ def append_md(widget, md_text, index="end"):
 def setup_md_tags(widget):
     """Configure the markdown display tags on ``widget`` (idempotent)."""
     _setup_tags(widget)
+
+
+class MarkdownRenderer:
+    """Adapter so the module-level render helpers satisfy DisplayRenderer.
+
+    Intentionally does *not* inherit from the Protocol: satisfaction is
+    structural, verified by ``isinstance(renderer, DisplayRenderer)`` at
+    runtime. Any component that needs markdown rendering depends on the
+    :class:`DisplayRenderer` contract instead of this class, so the renderer
+    can be swapped (roadmap M6 fork-proofing) without touching the consumer.
+    """
+
+    def setup(self, device):
+        setup_md_tags(device)
+
+    def render(self, device, md_text):
+        render_md_in_text(device, md_text)
+
+    def append(self, device, md_text, index="end"):
+        append_md(device, md_text, index)
 
 
 def _render_body(widget, md_text, index="end"):

@@ -9,14 +9,16 @@ model's reply through ``chat_stream``, and when the model asks for tool calls
 it executes them via :func:`kbl.tools.run_tool` and feeds the results back for
 another round, capped by the configured ``max_tool_rounds``.
 
-Events yielded (the same tuple shape a panel can pump into a queue)::
+Events yielded are the :class:`~kbl.contracts.StreamEvent` union — typed
+NamedTuples whose first element is the event kind, so a panel can pump them
+into a queue and unpack ``kind, value = event``::
 
-    ("reasoning", text)              -- thinking token stream
-    ("content", text)                -- assistant answer token stream
-    ("tool_call", {"id","name","arguments"})
-    ("tool_result", (call, result))  -- result is always a string
-    ("done", final_text)             -- loop finished normally
-    ("error", message)               -- fatal, or rounds exhausted
+    Content("content", text)                -- assistant answer token stream
+    Reasoning("reasoning", text)            -- thinking token stream
+    ToolCall("tool_call", {"id","name","arguments"})
+    ToolResult("tool_result", (call, result))  -- result is always a string
+    Done("done", final_text)                -- loop finished normally
+    Error("error", message)                 -- fatal, or rounds exhausted
 
 The harness owns conversation state: on completion it appends the tool message
 round-trips and the final assistant reply to the passed ``conversation`` list
@@ -24,10 +26,11 @@ round-trips and the final assistant reply to the passed ``conversation`` list
 running it on a worker thread and marshalling events back to the UI.
 """
 
-import threading
+from typing import Iterator
 
 from kbl import agents, context, toolstore
 from kbl.chat_client import chat_stream
+from kbl.contracts import Harness, StreamEvent, make_stream_event
 from kbl.tools import run_tool
 
 DEFAULT_MAX_TOOL_ROUNDS = 8
@@ -98,8 +101,11 @@ def orchestrate(
     tools=None,
     system_prompt=None,
     max_rounds=None,
-):
+) -> Iterator[StreamEvent]:
     """Run the agent loop, yielding events as it goes.
+
+    This is the M2 :class:`~kbl.contracts.Harness` implementation: a
+    synchronous generator of :class:`~kbl.contracts.StreamEvent`s.
 
     ``conversation`` is the mutable history list; tool results and the final
     assistant reply are appended to it when the loop does not end via stop.
@@ -140,7 +146,7 @@ def orchestrate(
                     continue
                 if kind == "content":
                     content_parts.append(piece)
-                yield (kind, piece)
+                yield make_stream_event(kind, piece)
             if calls is None:
                 break
             if stop_event is not None and stop_event.is_set():
@@ -152,8 +158,8 @@ def orchestrate(
             tool_messages.append(_assistant_tool_message(normalized))
             for call in normalized:
                 result = run_tool(tools or [], call["name"], call["arguments"])
-                yield ("tool_call", call)
-                yield ("tool_result", (call, result))
+                yield make_stream_event("tool_call", call)
+                yield make_stream_event("tool_result", (call, result))
                 tool_messages.append(
                     {
                         "role": "tool",
@@ -162,13 +168,13 @@ def orchestrate(
                     }
                 )
         else:
-            yield ("error", f"Stopped after {rounds} tool rounds.")
+            yield make_stream_event("error", f"Stopped after {rounds} tool rounds.")
             return
         final_text = "".join(content_parts)
         if stop_event is None or not stop_event.is_set():
             conversation.extend(tool_messages)
             if final_text:
                 conversation.append({"role": "assistant", "content": final_text})
-        yield ("done", final_text)
+        yield make_stream_event("done", final_text)
     except Exception as exc:
-        yield ("error", str(exc))
+        yield make_stream_event("error", str(exc))
