@@ -79,6 +79,13 @@ class MainWindow(tk.Tk):
         self.bus.subscribe(
             "agent_manager_requested", self._on_agent_manager_requested
         )
+        self.bus.subscribe(
+            "delegation_requested", self._on_delegation_requested
+        )
+        self.bus.subscribe("subagent_started", self._on_subagent_started)
+        self.bus.subscribe("subagent_event", self._on_subagent_event)
+        self.bus.subscribe("subagent_completed", self._on_subagent_completed)
+        self.bus.subscribe("subagent_failed", self._on_subagent_failed)
 
     def _on_file_opened(self, payload):
         self.panels["editor"].open(payload.path)
@@ -88,6 +95,23 @@ class MainWindow(tk.Tk):
 
     def _on_agent_manager_requested(self, _payload=None):
         self._show_agent_manager()
+
+    # ---- delegation relays (M5) ----
+
+    def _on_delegation_requested(self, payload):
+        self.panels["chat"].view.render_delegation_requested(payload)
+
+    def _on_subagent_started(self, payload):
+        self.panels["chat"].view.render_subagent_started(payload)
+
+    def _on_subagent_event(self, payload):
+        self.panels["chat"].view.render_subagent_event(payload)
+
+    def _on_subagent_completed(self, payload):
+        self.panels["chat"].view.render_subagent_completed(payload)
+
+    def _on_subagent_failed(self, payload):
+        self.panels["chat"].view.render_subagent_failed(payload)
 
     # ---- layout ----
 

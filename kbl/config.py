@@ -27,6 +27,7 @@ DEFAULTS = {
     "disabled_tools": [],
     "active_conversation": {},
     "max_tool_rounds": 8,
+    "max_delegated_turns": 32,
 }
 
 

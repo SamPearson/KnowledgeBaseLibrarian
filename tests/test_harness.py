@@ -217,3 +217,189 @@ def test_max_tool_rounds_reads_config():
         data = {"max_tool_rounds": 0}
 
     assert harness.max_tool_rounds(Low()) == harness.DEFAULT_MAX_TOOL_ROUNDS
+
+
+# ---------------------------------------------------------------------------
+# M5: delegation through the harness.
+# ---------------------------------------------------------------------------
+
+
+def test_build_request_adds_delegate_tool_for_delegating_agent(tmp_config, workspace, kbl_dirs):
+    agents.create_agent("delegator_agent")
+    agent = agents.load_agent("delegator_agent")
+    agent.can_delegate_to = ["writer"]
+    agents.save_metadata("delegator_agent", agent)
+    tmp_config.data["active_agent"] = "delegator_agent"
+
+    system_prompt, tool_list = harness.build_request(tmp_config, str(workspace))
+    names = [t.name for t in tool_list]
+    assert "delegate" in names
+    assert "- delegate(" in system_prompt
+
+
+def test_build_request_omits_delegate_tool_by_default(tmp_config, workspace, kbl_dirs):
+    system_prompt, tool_list = harness.build_request(tmp_config, str(workspace))
+    names = [t.name for t in tool_list]
+    assert "delegate" not in names
+
+
+def test_build_request_allowlist_and_delegate_tool_coexist(tmp_config, workspace, kbl_dirs):
+    agents.create_agent("delegator_agent")
+    agent = agents.load_agent("delegator_agent")
+    agent.can_delegate_to = ["writer"]
+    agent.allowed_tools = ["read_file"]  # child's own tools unaffected
+    agents.save_metadata("delegator_agent", agent)
+    tmp_config.data["active_agent"] = "delegator_agent"
+
+    _, tool_list = harness.build_request(tmp_config, str(workspace))
+    names = [t.name for t in tool_list]
+    assert "read_file" in names
+    assert "delegate" in names
+    assert "list_files" not in names
+
+
+def test_orchestrate_delegates_tool_call(monkeypatch, tmp_config, workspace, kbl_dirs):
+    """One parent agent delegates a sub-task to one child: end-to-end in harness."""
+    from kbl.delegator import SubagentDelegator
+    from kbl.events import (
+        SUBAGENT_COMPLETED,
+        SUBAGENT_STARTED,
+        SubagentStarted,
+        SubagentCompleted,
+    )
+
+    agents.create_agent("manager")
+    manager = agents.load_agent("manager")
+    manager.can_delegate_to = ["writer"]
+    agents.save_metadata("manager", manager)
+    agents.create_agent("writer")
+    tmp_config.data["active_agent"] = "manager"
+
+    delegate_call = {
+        "id": "call_1",
+        "name": "delegate",
+        "arguments": '{"agent_id": "writer", "task": "summarize docs"}',
+    }
+
+    def schedule(messages):
+        system = messages[0]["content"] if messages else ""
+        tool_count = sum(1 for m in messages if m.get("role") == "tool")
+        if tool_count == 0 and "- delegate(" in system:
+            return [("tool_calls", [delegate_call])]
+        return [("content", "done "), ("content", "here")]
+
+    sink_events = []
+
+    def event_sink(kind, value):
+        sink_events.append((kind, value))
+
+    monkeypatch.setattr(harness, "chat_stream", _fake_chat_stream([schedule]))
+    monkeypatch.setattr(harness, "run_tool", lambda tools, name, args: f"<ran {name}>")
+
+    conversation = [{"role": "user", "content": "q"}]
+    events = list(
+        harness.orchestrate(
+            "http://x", "model", "", conversation,
+            workspace=str(workspace), config=tmp_config, event_sink=event_sink,
+        )
+    )
+    kinds = [k for k, _ in events]
+    assert "tool_call" in kinds
+    delegate_results = [
+        result
+        for kind, value in events
+        if kind == "tool_result"
+        for call, result in (value,)
+        if call == delegate_call
+    ]
+    assert delegate_results, "delegate tool result missing"
+    non_delegate_tools = [
+        result
+        for kind, value in events
+        if kind == "tool_result"
+        for call, result in (value,)
+        if call != delegate_call
+    ]
+    assert not non_delegate_tools  # no non-delegate tool executed
+
+    # Parent conversation only carries its own state (its own delegate round).
+    assert conversation == [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "delegate", "arguments": delegate_call["arguments"]},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "done here"},
+        {"role": "assistant", "content": "done here"},
+    ]
+
+    started = [v for k, v in sink_events if k == SUBAGENT_STARTED]
+    completed = [v for k, v in sink_events if k == SUBAGENT_COMPLETED]
+    assert len(started) == 1 and len(completed) == 1
+    assert isinstance(started[0], SubagentStarted)
+    assert isinstance(completed[0], SubagentCompleted)
+    assert started[0].task_id == completed[0].task_id
+    assert started[0].agent_id == "writer"
+    assert completed[0].result == "done here"
+
+
+def test_orchestrate_requires_real_delegator_for_depth(monkeypatch, tmp_config, workspace, kbl_dirs):
+    """Injecting a stub delegator is honored; the default engine is created lazily."""
+    from kbl.contracts import DelegationResult
+
+    class Stub:
+        def __init__(self):
+            self.calls = []
+
+        def delegate(self, request, stop_event=None, depth=0):
+            self.calls.append(request)
+            return DelegationResult(task_id="t_123", result="stubbed")
+
+    agents.create_agent("manager")
+    manager = agents.load_agent("manager")
+    manager.can_delegate_to = ["writer"]
+    agents.save_metadata("manager", manager)
+    agents.create_agent("writer")
+    tmp_config.data["active_agent"] = "manager"
+
+    call = {
+        "id": "call_1",
+        "name": "delegate",
+        "arguments": '{"agent_id": "writer", "task": "do it"}',
+    }
+
+    def schedule(messages):
+        return [("tool_calls", [call])]
+
+    stub = Stub()
+    monkeypatch.setattr(harness, "chat_stream", _fake_chat_stream([schedule]))
+    monkeypatch.setattr(harness, "run_tool", lambda tools, name, args: "unused")
+
+    events = list(
+        harness.orchestrate(
+            "http://x", "model", "", [],
+            workspace=str(workspace), config=tmp_config,
+            delegator=stub, max_rounds=1,
+        )
+    )
+    results = [r for k, v in events if k == "tool_result" for _, r in (v,)]
+    assert results == ["stubbed"]
+    assert len(stub.calls) == 1
+    assert stub.calls[0].caller_id == "manager"
+    assert stub.calls[0].agent_id == "writer"
+
+
+def test_delegate_tool_outside_harness_explains_itself():
+    from kbl.delegator import make_delegate_tool
+
+    tool = make_delegate_tool()
+    assert tool.run(agent_id="writer", task="x") == (
+        "<delegate> is handled by the harness delegation orchestrator."
+    )

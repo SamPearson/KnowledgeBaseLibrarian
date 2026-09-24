@@ -17,6 +17,7 @@ PURE_SERVICES = [
     "context",
     "contracts",
     "conversations",
+    "delegator",
     "events",
     "harness",
     "tools",

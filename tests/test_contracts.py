@@ -151,3 +151,24 @@ def test_delegation_request_is_a_typed_dataclass():
     assert req.context == [{"role": "user", "content": "x"}]
     assert req.tool_allowlist == {"read_file"}
     assert req == req  # frozen + dataclass equality
+
+
+def test_delegation_result_is_a_typed_dataclass():
+    result = contracts.DelegationResult(task_id="t_1", result="draft text", tool_calls=[{"id": "c"}])
+    assert result.task_id == "t_1"
+    assert result.result == "draft text"
+    assert result.tool_calls == [{"id": "c"}]
+    assert contracts.DelegationResult(task_id="t", result="").tool_calls is None
+
+
+def test_subagent_delegator_satisfies_delegator_protocol():
+    """Structural check: the standing impl exposes the Delegator surface."""
+    from kbl.delegator import SubagentDelegator
+
+    delegator = SubagentDelegator(config=None)
+    assert callable(getattr(delegator, "delegate"))
+    import inspect
+
+    params = inspect.signature(SubagentDelegator.delegate).parameters
+    assert "request" in params and "stop_event" in params
+    assert "depth" in params  # harness passes nesting level

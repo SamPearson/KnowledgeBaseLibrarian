@@ -31,6 +31,12 @@ from typing import Iterator
 from kbl import agents, context, toolstore
 from kbl.chat_client import chat_stream
 from kbl.contracts import Harness, StreamEvent, make_stream_event
+from kbl.delegator import (
+    DELEGATE_TOOL_NAME,
+    SubagentDelegator,
+    invoke_delegate,
+    make_delegate_tool,
+)
 from kbl.tools import run_tool
 
 DEFAULT_MAX_TOOL_ROUNDS = 8
@@ -51,15 +57,23 @@ def max_tool_rounds(config, default=DEFAULT_MAX_TOOL_ROUNDS):
     return value if value >= 1 else default
 
 
-def build_request(config, workspace=None):
-    """Resolve the environment for one send: tool list + composed system prompt."""
+def build_request(config, workspace=None, agent_id=None):
+    """Resolve the environment for one send: tool list + composed system prompt.
+
+    ``agent_id`` selects the agent whose allowlist and delegation settings are
+    applied (default: the configured active agent). When the agent may
+    delegate, a ``delegate`` tool is appended after allowlist filtering so the
+    model can dispatch sub-tasks.
+    """
     collection = toolstore.collect_tools(workspace, config)
     tool_list = list(collection.enabled_tools)
-    active = agents.active_agent(config)
+    active = agent_id or agents.active_agent(config)
     agent = agents.load_agent(active)
     if agent.allowed_tools is not None:
         allowed = set(agent.allowed_tools)
         tool_list = [t for t in tool_list if t.name in allowed]
+    if agent.can_delegate_to:
+        tool_list = list(tool_list) + [make_delegate_tool()]
     system_prompt = context.compose_system(
         agents.get_prompt(active),
         context.workspace_instructions(workspace),
@@ -106,6 +120,11 @@ def orchestrate(
     tools=None,
     system_prompt=None,
     max_rounds=None,
+    *,
+    agent_id=None,
+    depth=0,
+    delegator=None,
+    event_sink=None,
 ) -> Iterator[StreamEvent]:
     """Run the agent loop, yielding events as it goes.
 
@@ -118,18 +137,70 @@ def orchestrate(
     ``tools`` and ``system_prompt`` may be supplied directly for testability;
     otherwise they are built from ``config`` (and ``workspace``) via
     :func:`build_request`.
+
+    M5 (keyword-only): ``agent_id`` pins which agent this loop runs as (used
+    for recursion and for the delegate tool's caller); ``depth`` is the
+    delegation nesting level; ``delegator`` injects a delegation engine; and
+    ``event_sink`` receives ``(kind, value)`` lifecycle payloads for
+    sub-agents started through the ``delegate`` tool.
     """
     if tools is None or system_prompt is None:
         if config is None:
             raise ValueError(
                 "config is required when tools/system_prompt are not supplied"
             )
-        built_system_prompt, built_tools = build_request(config, workspace)
+        built_system_prompt, built_tools = build_request(config, workspace, agent_id=agent_id)
         if system_prompt is None:
             system_prompt = built_system_prompt
         if tools is None:
             tools = built_tools
     rounds = max_rounds if max_rounds is not None else max_tool_rounds(config)
+
+    caller_id = agent_id or (agents.active_agent(config) if config is not None else None)
+
+    delegator_holder = [delegator]
+
+    def _run_agent(
+        config,
+        workspace,
+        conversation,
+        stop_event,
+        *,
+        agent_id,
+        depth,
+        max_rounds,
+        allowlist,
+    ):
+        child_prompt, child_tools = build_request(config, workspace, agent_id=agent_id)
+        if allowlist is not None:
+            allowed = set(allowlist)
+            child_tools = [t for t in child_tools if t.name in allowed]
+        return orchestrate(
+            server,
+            model,
+            api_key,
+            conversation,
+            workspace=workspace,
+            config=config,
+            stop_event=stop_event,
+            tools=child_tools,
+            system_prompt=child_prompt,
+            max_rounds=max_rounds,
+            agent_id=agent_id,
+            depth=depth,
+            delegator=delegator_holder[0],
+            event_sink=event_sink,
+        )
+
+    def _get_delegator():
+        if delegator_holder[0] is None:
+            delegator_holder[0] = SubagentDelegator(
+                config,
+                workspace=workspace,
+                event_sink=event_sink,
+                run_agent=_run_agent,
+            )
+        return delegator_holder[0]
 
     tool_messages = []
     content_parts = []
@@ -162,7 +233,12 @@ def orchestrate(
             call_seq += len(normalized)
             tool_messages.append(_assistant_tool_message(normalized))
             for call in normalized:
-                result = run_tool(tools or [], call["name"], call["arguments"])
+                if call["name"] == DELEGATE_TOOL_NAME:
+                    result = invoke_delegate(
+                        _get_delegator(), call, caller_id, stop_event, depth
+                    )
+                else:
+                    result = run_tool(tools or [], call["name"], call["arguments"])
                 yield make_stream_event("tool_call", call)
                 yield make_stream_event("tool_result", (call, result))
                 tool_messages.append(

@@ -16,9 +16,24 @@ from kbl import agents, harness, theme
 from kbl.chat_client import ServerError, fetch_models
 from kbl.conversations import ConversationStore, workspace_id_for
 from kbl.events import (
+    DELEGATION_REQUESTED,
+    SUBAGENT_COMPLETED,
+    SUBAGENT_EVENT,
+    SUBAGENT_FAILED,
+    SUBAGENT_STARTED,
     AgentManagerRequested,
     ServerConfigRequested,
     WorkspaceSelected,
+)
+
+_SUBAGENT_TOPICS = frozenset(
+    {
+        DELEGATION_REQUESTED,
+        SUBAGENT_STARTED,
+        SUBAGENT_EVENT,
+        SUBAGENT_COMPLETED,
+        SUBAGENT_FAILED,
+    }
 )
 from kbl.panels.attach_popup import AttachPopup
 from kbl.panels.history_view import HistoryView
@@ -363,10 +378,14 @@ class ChatPanel(ttk.Frame):
                 workspace=workspace,
                 config=self.config,
                 stop_event=self._stop_event,
+                event_sink=self._event_sink,
             ):
                 self._request_queue.put(event)
         except Exception as exc:
             self._request_queue.put(("error", str(exc)))
+
+    def _event_sink(self, kind, value):
+        self._request_queue.put((kind, value))
 
     # ---- queue draining (UI thread) ----
 
@@ -389,6 +408,8 @@ class ChatPanel(ttk.Frame):
             elif kind == "error":
                 self.view.append("Error", value)
                 self._finish_stream("", error=True)
+            elif kind in _SUBAGENT_TOPICS:
+                self._relay_subagent_event(value)
         if self._streaming:
             self.after(40, self._drain_queue)
 
@@ -408,6 +429,10 @@ class ChatPanel(ttk.Frame):
         self.view.finish(self.conversation)
         self.persist()
         self._refresh_convs()
+
+    def _relay_subagent_event(self, payload):
+        if self.bus is not None:
+            self.bus.emit(payload)
 
     def _stop(self):
         if self._stop_event:

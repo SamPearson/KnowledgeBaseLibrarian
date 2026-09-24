@@ -69,6 +69,13 @@ class HistoryView:
             ),
             font=(theme.MONO_FAMILY, theme.SIZE - 1),
         )
+        self.widget.tag_configure(
+            "subagent",
+            foreground=theme.PALETTE.get(
+                "accent_text", theme.PALETTE["chrome_text"]
+            ),
+            font=(theme.MONO_FAMILY, theme.SIZE),
+        )
         for _sep in self._dividers:
             _sep.configure(bg=theme.PALETTE["border"])
 
@@ -347,3 +354,46 @@ class HistoryView:
         self.widget.insert("end", f"\n    {preview}", "tool_res")
         self.widget.see("end")
         self.widget.configure(state="disabled")
+
+    # ---- subagent rendering (M5) ----
+
+    def _insert_subagent(self, text, tag="subagent"):
+        self._stop_progress()
+        self.widget.configure(state="normal")
+        self.widget.insert("end", text, tag)
+        self.widget.see("end")
+        self.widget.configure(state="disabled")
+
+    def render_delegation_requested(self, payload):
+        self._insert_subagent(
+            f"\n  \u21b3 delegate \u2192 {payload.agent_id}: {payload.task}\n"
+        )
+
+    def render_subagent_started(self, payload):
+        self._insert_subagent(f"  \u2733 started {payload.task_id}\n")
+
+    def render_subagent_event(self, payload):
+        event = payload.event
+        kind = event.kind if isinstance(event, tuple) else getattr(event, "kind", "")
+        if kind != "content":
+            return
+        piece = event[1] if isinstance(event, tuple) else event.payload
+        if not piece:
+            return
+        if len(piece) > _TOOL_PREVIEW_LIMIT:
+            piece = piece[:_TOOL_PREVIEW_LIMIT] + "\u2026"
+        self._insert_subagent(f"      {piece}")
+
+    def render_subagent_completed(self, payload):
+        preview = " ".join((payload.result or "").split())
+        if len(preview) > _TOOL_PREVIEW_LIMIT:
+            preview = preview[:_TOOL_PREVIEW_LIMIT] + "\u2026"
+        if preview:
+            self._insert_subagent(f"  \u2713 {preview}\n")
+        else:
+            self._insert_subagent(f"  \u2713 done ({payload.task_id})\n")
+
+    def render_subagent_failed(self, payload):
+        self._insert_subagent(
+            f"  \u2717 failed ({payload.task_id}): {payload.error}\n",
+        )
