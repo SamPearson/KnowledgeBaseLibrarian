@@ -12,8 +12,9 @@ except ImportError:
     from tkinter import ttk
     TTKBOOTSTRAP_AVAILABLE = False
 
-from kbl import theme
+from kbl import harness, theme
 from kbl.events import EventBus, WorkspaceSelected
+from kbl.markdown_render import MarkdownRenderer
 from kbl.panels.chat import ChatPanel
 from kbl.panels.editor import EditorPanel
 from kbl.panels.file_tree import FileTreePanel
@@ -67,9 +68,18 @@ class MainWindow(tk.Tk):
         # Note: ttkbootstrap uses Panedwindow (lowercase 'w'), not PanedWindow
         self._layout_widget = ttk.Panedwindow(self, orient="horizontal")
         self._layout_widget.pack(fill="both", expand=True)
+        renderer = MarkdownRenderer()
         self.panels["tree"] = FileTreePanel(self, bus=self.bus)
-        self.panels["editor"] = EditorPanel(self, config=self.config)
-        self.panels["chat"] = ChatPanel(self, config=self.config, bus=self.bus)
+        self.panels["editor"] = EditorPanel(
+            self, config=self.config, renderer=renderer
+        )
+        self.panels["chat"] = ChatPanel(
+            self,
+            config=self.config,
+            bus=self.bus,
+            harness=harness.orchestrate,
+            renderer=renderer,
+        )
 
     def _wire_events(self):
         self.bus.subscribe("file_opened", self._on_file_opened)

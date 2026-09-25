@@ -109,14 +109,29 @@ Steps:
 
 ---
 
-## M6 — Per-component docs + fork proof
+## M6 — Decoupling seams + per-component docs
 
-**Goal:** deliverable #3 from arch-doc section 6 + two drop-in swaps.
+**Goal:** make the fork swap a no-code-change operation, then document the decoupled shape. Deliverable #3 from arch-doc section 6.
 
 Steps:
-1. Write per-component docs using the template (Purpose/Location/Inputs/Outputs/Dependencies/Events/Contracts/Subagents/Isolation/Testability/Fork implications) for: `MainWindow`, `FileTreePanel`, `EditorPanel` (Display mode), `ChatPanel`, `harness`, `markdown_render`, `EventBus`, `agents`, `toolstore`, each dialog.
-2. Second harness: a `StableDiffusionHarness` implementing `Harness` (satisfies protocol, plays through the same `EventBus`/`Harness` seams).
-3. Second display type: an image-capable display implementing `DisplayRenderer`/`Device` (the fork's `ImageCanvas`).
+1. **DI seams** — panels take their collaborators via the constructor instead of reaching for modules:
+   - `ChatPanel(..., harness=None)` → defaults to the `kbl.harness` module; the `harness.orchestrate(...)` call uses `self._harness`.
+   - `HistoryView(..., renderer=None)` + `EditorPanel(..., renderer=None)` → default `MarkdownRenderer()` (already satisfies `DisplayRenderer`); replace `markdown_render.setup_md_tags`/`append_md`/`render_md_in_text` calls with `renderer.setup`/`renderer.append`/`renderer.render`.
+   - `MainWindow._build_panels` becomes the single wiring point that passes `harness` and `renderer` instances into the panels.
+2. **Write per-component docs** using the template (Purpose/Location/Inputs/Outputs/Dependencies/Events/Contracts/Subagents/Isolation/Testability/Fork implications) for: `MainWindow`, `FileTreePanel`, `EditorPanel` (Display mode), `ChatPanel`, `harness`, `markdown_render`, `EventBus`, `agents`, `toolstore`, each dialog. Docs are written *after* the seams so they describe the final decoupled wiring.
+3. **Dead-code sweep**: remove unused `import threading` in `kbl/delegator.py` and the never-referenced `_STOP` in `kbl/chat_client.py`.
+
+**Acceptance:** swapping `harness`→`StableDiffusionHarness` (or `markdown_render`→`ImageRenderer`) requires no edits inside `MainWindow` or `panels/*` — only the wiring point changes. Behavior unchanged; M0 suite green.
+
+---
+
+## M7 — Fork proof
+
+**Goal:** prove the seams with two drop-in swaps.
+
+Steps:
+1. Second harness: a `StableDiffusionHarness` implementing `Harness` (satisfies protocol, plays through the same `EventBus`/`Harness` seams).
+2. Second display type: an image-capable display implementing `DisplayRenderer`/`Device` (the fork's `ImageCanvas`). **Planned contract extension:** the current `Device` surface (`cget`/`tag_configure`/`configure`/`delete`/`insert`) and the `StreamEvent` text payloads assume a `Text`-like widget; an image backend needs a narrow extension (a distinct image-renderer protocol and/or an image stream event). Scope this as a mini-plan before M7 work starts.
 
 **Acceptance:** swapping `harness`→`StableDiffusionHarness` (or `markdown_render`→`ImageRenderer`) requires no edits inside `MainWindow` or `panels/*`.
 
@@ -128,7 +143,7 @@ Steps:
 - **M1 before M3** — you cannot bus-relocate logic that's still buried in the panel; thin first, then decouple.
 - **M2 (contracts) precedes M3/M4/M5** — the bus, agent model, and delegator all implement contracts that must exist first (matches arch-doc principle "define these first").
 - **M5 after M4** — delegation requires `Agent.can_delegate_to`/`allowed_tools` to be a real per-agent capability.
-- **M6 last** — the fork proof is the payoff; everything before it exists to make M6 boring.
+- **M6 before M7** — the seams and docs land first so the fork swaps (M7) are wiring-only changes; the fork proof is the payoff, everything before it exists to make M7 boring.
 
 ## Ripple risks (from arch-doc risks 1–9)
 

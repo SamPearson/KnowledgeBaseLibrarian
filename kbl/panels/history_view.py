@@ -9,15 +9,17 @@ try:
 except ImportError:
     from tkinter import ttk
 
-from kbl import markdown_render, theme
+from kbl import theme
+from kbl.markdown_render import MarkdownRenderer
 
 _TOOL_PREVIEW_LIMIT = 160
 
 
 class HistoryView:
-    def __init__(self, master, on_edit, on_delete, stop_progress):
+    def __init__(self, master, on_edit, on_delete, stop_progress, renderer=None):
         self.widget = tk.Text(master, wrap="word", state="disabled")
         theme.style_text(self.widget)
+        self._renderer = renderer if renderer is not None else MarkdownRenderer()
         self.widget.bind("<Configure>", lambda e: self.resize_dividers())
 
         self._on_edit = on_edit
@@ -39,7 +41,7 @@ class HistoryView:
 
     def restyle(self):
         theme.style_text(self.widget)
-        markdown_render.setup_md_tags(self.widget)
+        self._renderer.setup(self.widget)
         self.widget.tag_configure(
             "who",
             foreground=theme.PALETTE["accent"],
@@ -175,7 +177,7 @@ class HistoryView:
             end = self.widget.index(f"{end_mark} + 1c")
             body = self.widget.get(start, end)
             self.widget.delete(start, end)
-            markdown_render.append_md(self.widget, body)
+            self._renderer.append(self.widget, body)
             self.widget.mark_set(end_mark, "end-1c")
             self.widget.mark_gravity(end_mark, "left")
             self._message_blocks.append(
@@ -202,7 +204,7 @@ class HistoryView:
         start = self.widget.index("end-1c")
         if text:
             if who == "User":
-                markdown_render.append_md(self.widget, text)
+                self._renderer.append(self.widget, text)
             else:
                 self.widget.insert("end", text)
         end = self.widget.index("end-1c")
@@ -309,7 +311,7 @@ class HistoryView:
         start_mark = f"_a{self._msg_seq}_s"
         self.widget.mark_set(start_mark, start)
         self.widget.mark_gravity(start_mark, "left")
-        markdown_render.append_md(self.widget, content)
+        self._renderer.append(self.widget, content)
         end_mark = f"_a{self._msg_seq}_e"
         self.widget.mark_set(end_mark, "end-1c")
         self.widget.mark_gravity(end_mark, "left")

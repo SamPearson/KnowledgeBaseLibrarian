@@ -216,9 +216,12 @@ For example, the **ChatPanel** doc must explicitly state: *"This is a **view**. 
 | **F1** | Introduce `EventBus`, replace `self.master` cross-panel refs | Panels become decoupled |
 | **F2a** | Extend `agents.py` → full Agent/Subagent model + metadata | Subagents concept exists (registry) |
 | **F2b** | Delegation + Orchestrator in Harness (tool-first delegate, isolation, task_id correlation, cancellation) | Delegation works end-to-end |
-| **F3** | Write per-component docs for all pure services (including subagent/delegation fields) | New devs/forks understand the system |
-| **F4** | Add a second harness (e.g., StableDiffusion backend) | Prove the framework is swappable |
-| **F5** | Add a second display type (image canvas) | Prove the framework is pluggable |
+| **F3** | Decoupling seams: panels take harness/renderer via constructor; MainWindow is the single wiring point | Swaps become wiring-only changes |
+| **F4** | Write per-component docs for all components (including subagent/delegation fields) | New devs/forks understand the system |
+| **F5** | Add a second harness (e.g., StableDiffusion backend) | Prove the framework is swappable |
+| **F6** | Add a second display type (image canvas) | Prove the framework is pluggable |
+
+The roadmap operationalizes these as **M6** (F3+F4: seams + per-component docs) and **M7** (F5+F6: the fork proof). See `docs/milestones/roadmap.md`.
 
 ---
 

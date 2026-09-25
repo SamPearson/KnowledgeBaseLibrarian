@@ -12,8 +12,10 @@ try:
 except ImportError:
     from tkinter import ttk
 
-from kbl import agents, harness, theme
+from kbl import agents, theme
 from kbl.chat_client import ServerError, fetch_models
+from kbl.harness import orchestrate
+from kbl.markdown_render import MarkdownRenderer
 from kbl.conversations import ConversationStore, workspace_id_for
 from kbl.events import (
     DELEGATION_REQUESTED,
@@ -48,10 +50,12 @@ _ATTACH_RE = re.compile(r"@([^\s,.;:!?\"'()\[\]{}<>]+)")
 
 
 class ChatPanel(ttk.Frame):
-    def __init__(self, master, config, bus=None):
+    def __init__(self, master, config, bus=None, harness=None, renderer=None):
         super().__init__(master)
         self.config = config
         self.bus = bus
+        self._harness = harness if harness is not None else orchestrate
+        self._renderer = renderer if renderer is not None else MarkdownRenderer()
         self.workspace = None
         if bus is not None:
             bus.subscribe("workspace_selected", self._on_workspace_selected)
@@ -128,6 +132,7 @@ class ChatPanel(ttk.Frame):
             on_edit=self._edit_message,
             on_delete=self._delete_message,
             stop_progress=self._stop_progress,
+            renderer=self._renderer,
         )
         self.pw.add(self.view.widget, weight=1)
 
@@ -370,7 +375,7 @@ class ChatPanel(ttk.Frame):
     def _stream_worker(self, server, model, api_key):
         workspace = self._active_workspace()
         try:
-            for event in harness.orchestrate(
+            for event in self._harness(
                 server,
                 model,
                 api_key,

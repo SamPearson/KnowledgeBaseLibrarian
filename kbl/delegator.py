@@ -26,7 +26,6 @@ keeps the module acyclic: :mod:`kbl.harness` imports it, never the reverse.
 """
 
 import json
-import threading
 import uuid
 
 from kbl import agents

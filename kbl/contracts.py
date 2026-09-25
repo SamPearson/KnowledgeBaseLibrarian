@@ -25,7 +25,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Literal, NamedTuple, Protocol, runtime_checkable
+from typing import Callable, Iterator, Literal, NamedTuple, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # StreamEvent: the typed event union a Harness stream yields.
@@ -117,6 +117,11 @@ class Harness(Protocol):
         tools: list | None = None,
         system_prompt: str | None = None,
         max_rounds: int | None = None,
+        *,
+        agent_id: str | None = None,
+        depth: int = 0,
+        delegator: Delegator | None = None,
+        event_sink: Callable[[str, object], None] | None = None,
     ) -> Iterator[StreamEvent]: ...
 
 

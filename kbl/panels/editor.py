@@ -8,13 +8,15 @@ try:
 except ImportError:
     from tkinter import ttk
 
-from kbl import markdown_render, theme
+from kbl import theme
+from kbl.markdown_render import MarkdownRenderer
 
 
 class EditorPanel(ttk.Frame):
-    def __init__(self, master, config):
+    def __init__(self, master, config, renderer=None):
         super().__init__(master)
         self.config = config
+        self._renderer = renderer if renderer is not None else MarkdownRenderer()
         self.file_path = None
         self.mode = "edit"
         self._dirty = False
@@ -89,7 +91,7 @@ class EditorPanel(ttk.Frame):
     def _refresh_display(self):
         content = self.text.get("1.0", "end-1c")
         if self._fallback_text is not None:
-            markdown_render.render_md_in_text(self._fallback_text, content)
+            self._renderer.render(self._fallback_text, content)
 
     def _on_modified(self, _event=None):
         if self.text.edit_modified():

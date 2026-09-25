@@ -6,13 +6,8 @@ package) works against either. The user-entered server URL is used as the
 base_url; api_key is optional (local servers ignore it).
 """
 
-import threading
-
 DEFAULT_API_KEY = "not-needed"
 TIMEOUT_SECONDS = 60
-
-# Guarantees exactly one in-flight stream per process; Set() aborts it.
-_STOP = threading.Event()
 
 
 class ServerError(Exception):
