@@ -49,6 +49,7 @@ def test_make_stream_event_round_trips_every_kind():
         ("tool_result", ({"id": "call_1"}, "the file")),
         ("done", "hi"),
         ("error", "boom"),
+        ("image", "/tmp/kbl/generated.png"),
     ]
     for kind, payload in cases:
         event = contracts.make_stream_event(kind, payload)
@@ -107,6 +108,34 @@ def test_display_renderer_has_the_three_operations():
 
 
 # ---------------------------------------------------------------------------
+# M7 fork-proof drop-ins satisfy the contracts.
+# ---------------------------------------------------------------------------
+
+
+def test_stable_diffusion_harness_satisfies_harness_protocol():
+    from kbl.sd_harness import StableDiffusionHarness
+
+    for instance in (StableDiffusionHarness(), StableDiffusionHarness(backend=lambda **kw: b"")):
+        assert isinstance(instance, contracts.Harness)
+
+
+def test_tk_image_renderer_satisfies_image_renderer_protocol():
+    from kbl.image_render import TkImageRenderer
+
+    renderer = TkImageRenderer()
+    assert isinstance(renderer, contracts.ImageRenderer)
+    for name in ("setup", "render"):
+        assert callable(getattr(renderer, name))
+
+
+def test_image_event_is_a_stream_event_variant():
+    event = contracts.make_stream_event("image", "/tmp/x.png")
+    assert isinstance(event, contracts.Image)
+    assert isinstance(event, contracts.StreamEvent)
+    assert event == ("image", "/tmp/x.png")
+
+
+# ---------------------------------------------------------------------------
 # Contracts are pure value/description modules: protocols only.
 # ---------------------------------------------------------------------------
 
@@ -128,6 +157,7 @@ def test_runtime_contracts_are_runtime_checkable():
     for name in (
         "Harness",
         "DisplayRenderer",
+        "ImageRenderer",
         "Device",
         "WorkspaceProvider",
         "ConfigStore",

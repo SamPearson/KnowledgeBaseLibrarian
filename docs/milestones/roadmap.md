@@ -129,6 +129,9 @@ Steps:
 
 **Goal:** prove the seams with two drop-in swaps.
 
+Status: **complete** — see `m7-result.md`. Two drops landed with zero edits
+inside `MainWindow`/`panels/*`, enforced by `tests/test_fork_proof.py`.
+
 Steps:
 1. Second harness: a `StableDiffusionHarness` implementing `Harness` (satisfies protocol, plays through the same `EventBus`/`Harness` seams).
 2. Second display type: an image-capable display implementing `DisplayRenderer`/`Device` (the fork's `ImageCanvas`). **Planned contract extension:** the current `Device` surface (`cget`/`tag_configure`/`configure`/`delete`/`insert`) and the `StreamEvent` text payloads assume a `Text`-like widget; an image backend needs a narrow extension (a distinct image-renderer protocol and/or an image stream event). Scope this as a mini-plan before M7 work starts.

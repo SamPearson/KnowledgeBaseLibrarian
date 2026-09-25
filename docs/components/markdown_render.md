@@ -34,3 +34,5 @@ Strong. `MarkdownRenderer` against a mock/fake `Text` widget asserts protocol me
 ## Fork implications
 - An image/token renderer (e.g. `ImageRenderer`) implements the same protocol and is swapped in at `MainWindow._build_panels`. Consumers (`EditorPanel`, `HistoryView`) call only through the injected `DisplayRenderer`.
 - Removed M6 code — `md_to_html`/`_style_html`/the optional `import markdown` — can be resurrected on a branch that reintroduces `tkhtmlview`.
+
+> **M7 (fork proof):** confirmed — `kbl.sd_harness.StableDiffusionHarness` (ImageRenderer note below) drops in via `MainWindow._build_panels` wiring arguments only; `tests/test_fork_proof.py` enforces zero edits inside panels.

@@ -14,10 +14,12 @@ Two kinds of declarations live here:
   variants, ``DelegationRequest``/``DelegationResult``).
 - **Contracts** (:class:`Protocol`) describing what a component *is*. Several
   are implemented today (``WorkspaceProvider`` → ``kbl.workspaces``,
-  ``ConfigStore`` → ``kbl.config``, ``Harness`` → ``kbl.harness.orchestrate``,
-  ``DisplayRenderer`` → ``kbl.markdown_render.MarkdownRenderer``); the rest
-  are forward declarations for later milestones, so downstream M5/M6 work has
-  a fixed target to implement against.
+  ``ConfigStore`` → ``kbl.config``, ``Harness`` → ``kbl.harness.orchestrate``
+  and ``kbl.sd_harness.StableDiffusionHarness``, ``DisplayRenderer`` →
+  ``kbl.markdown_render.MarkdownRenderer``, ``ImageRenderer`` →
+  ``kbl.image_render.TkImageRenderer``); the rest are forward declarations for
+  later milestones, so downstream M5/M6 work has a fixed target to implement
+  against.
 """
 
 from __future__ import annotations
@@ -63,7 +65,19 @@ class Error(NamedTuple):
     message: str = ""
 
 
-StreamEvent = Content | Reasoning | ToolCall | ToolResult | Done | Error
+class Image(NamedTuple):
+    """A rendered image produced by a harness (M7: SD branch).
+
+    ``path`` is the file path of the generated image (PNG). Panels that only
+    know text renderers ignore this event; an :class:`ImageRenderer` surface
+    (the fork's image canvas) is what displays it.
+    """
+
+    kind: Literal["image"] = "image"
+    path: str = ""
+
+
+StreamEvent = Content | Reasoning | ToolCall | ToolResult | Done | Error | Image
 
 _STREAM_KINDS = {
     "content": Content,
@@ -72,6 +86,7 @@ _STREAM_KINDS = {
     "tool_result": ToolResult,
     "done": Done,
     "error": Error,
+    "image": Image,
 }
 
 
@@ -132,6 +147,21 @@ class DisplayRenderer(Protocol):
     def setup(self, device) -> None: ...
     def render(self, device, md_text: str) -> None: ...
     def append(self, device, md_text: str, index: str = "end") -> None: ...
+
+
+@runtime_checkable
+class ImageRenderer(Protocol):
+    """Renders a generated image (an ``Image`` stream event) into a widget.
+
+    Deliberately distinct from :class:`DisplayRenderer`: a text markdown
+    renderer must not be forced to carry image methods. The concrete proof
+    implementation is ``kbl.image_render.TkImageRenderer``; the fork's image
+    canvas is the production surface (the current text panels ignore ``image``
+    events and stay untouched).
+    """
+
+    def setup(self, device) -> None: ...
+    def render(self, device, image) -> None: ...
 
 
 @runtime_checkable

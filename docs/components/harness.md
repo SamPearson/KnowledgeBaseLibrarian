@@ -35,3 +35,5 @@ Excellent — the arch doc's daemon-safe rule applies: `tests/test_harness.py` r
 ## Fork implications
 - An SD-branch backend (image generation) is a new callable/object satisfying `Harness`; the UI wires it in `MainWindow._build_panels` only.
 - Parallel or streaming backends must still return an `Iterator[StreamEvent]` — the UI consumes the stream, so latency hiding happens upstream.
+
+> **M7 (fork proof):** confirmed — `kbl.sd_harness.StableDiffusionHarness` (ImageRenderer note below) drops in via `MainWindow._build_panels` wiring arguments only; `tests/test_fork_proof.py` enforces zero edits inside panels.

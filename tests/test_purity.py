@@ -20,6 +20,7 @@ PURE_SERVICES = [
     "delegator",
     "events",
     "harness",
+    "sd_harness",
     "tools",
     "toolstore",
     "workspaces",
