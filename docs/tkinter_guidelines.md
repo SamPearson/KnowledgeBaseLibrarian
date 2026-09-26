@@ -1131,6 +1131,148 @@ Those belong elsewhere.
 
 ---
 
+# 31. Horizontal Strips of Buttons Must Never Disappear
+
+This is the single most common Tkinter layout bug, and it is worth understanding
+rather than patching, because the fix is not where you expect it.
+
+## What Actually Happens
+
+`pack()` and `grid()` do not shrink a too-narrow strip gracefully. They do not
+clip it, and they do not scroll it. When the children of a frame need more width
+than the frame has, Tk allocates the excess shortfall to the children **in reverse
+packing order** until it runs out. The last-packed child is reduced to a 1×1 pixel
+allocation and is simply not drawn:
+
+```python
+row = ttk.Frame(parent, width=300)
+row.pack()
+
+ttk.Button(row, text="New", width=5).pack(side="left")     # 51px
+ttk.Button(row, text="Rename", width=8).pack(side="left")  # 75px
+ttk.Combobox(row, width=28).pack(side="left")              # 252px, needs 532 total
+```
+
+```text
+row alloc=300  req=532
+  New     x=  0  w= 51  h=30
+  Rename  x= 55  w= 75  h=30
+  Combo   x=  0  w=  1  h= 1     <-- not drawn, and no error, and no warning
+```
+
+So "the buttons disappear" is not a styling bug and not a `sticky` mistake. It is
+the documented behaviour of an over-constrained geometry manager, and it gets worse
+the further right you pack: the *last* thing you add is the *first* to vanish.
+
+## `minsize` Is Not a Frame Option
+
+The instinctive fix is to give the frame a minimum size. Frames cannot have one:
+
+```python
+ttk.Frame(parent).configure(minsize=(120, 30))
+# TclError: unknown option "-minsize"
+```
+
+`minsize()` is a **window manager** method — `Toplevel` and `Tk` only. Forcing the
+frame rigid does not help either, because the *parent* still decides the
+allocation:
+
+```python
+bar.configure(width=bar.winfo_reqwidth())
+bar.pack_propagate(False)   # bar is still given exactly 300px by its parent
+```
+
+If you want the truth about how much room a strip really needs, ask the strip.
+
+## The Rule
+
+> A horizontal strip of buttons must never rely on the parent being wide enough.
+> It must know its own minimum, and the window must be told not to go below it.
+
+Three parts, all of which are needed:
+
+1. **Give every button an explicit `width=` in characters.** Buttons without one
+   size to their label, so a rename to "Delete Selected Conversation" silently
+   doubles the width of a toolbar. A fixed `width` is not cosmetic — it is the
+   minimum you are promising.
+2. **Let the flexible children shrink to a declared floor, not to nothing.**
+   Comboboxes, entries and text areas should give up width first, down to a
+   `flex_chars` floor that is still usable. Everything else is rigid and keeps
+   its width.
+3. **Sum the strip's true requirement and apply it to the toplevel with
+   `minsize()`.** This is the only enforcement point Tk will honour, and it has to
+   be re-applied whenever the contents or the layout change, because at `__init__`
+   time nothing has been laid out and every panel reports zero.
+
+```python
+class ActionRow(ttk.Frame):
+    """A strip that keeps its actions visible at any width.
+
+    kbl.widgets.ActionRow packs children through add() and, on <Configure>,
+    refits them: when the row is narrower than the sum of its children, the
+    shortfall is taken from the flexible children in proportion to how much
+    slack each has, down to each child's floor. It also reports the width it
+    really needs, so the window can refuse to shrink past it.
+    """
+```
+
+## Sashes Need Their Own Enforcement
+
+`minsize()` stops the *window* shrinking, but it does nothing about a pane in a
+`ttk.Panedwindow` being dragged until its own toolbar cannot fit. That is a
+separate failure with the same symptom, so clamp the sashes too — and clamp them
+*bidirectionally*, reserving room for the panes to the right as you walk left to
+right:
+
+```python
+left = 0
+for index in range(len(panes) - 1):
+    room = total - sum(minima[index + 1:])   # never starve the panes after this one
+    left = max(left + minima[index], min(widget.sashpos(index), room))
+    widget.sashpos(index, left)
+```
+
+A one-directional clamp (only ever pushing a sash right) still lets a wide pane on
+the left crush the pane on the right, which is exactly the case that hid the
+"Server..." button in this app.
+
+## `ttk.Label` Cannot Shrink
+
+Do not treat a label as a flexible child, and do not give it a `-width` hoping to
+constrain it. For `ttk.Label`, `-width` is a **wrap hint, not a size limit** —
+setting it to 120 characters made the label's requested width *larger* (964px).
+A label packed `fill="x", expand=True` next to a button will claim all the slack
+and the button still gets 1×1. Shorten the text instead, at the point it is set:
+
+```python
+self.status_var.set(elide_middle(server, 44))   # "http://192.168.0.1:8.../v1"
+```
+
+## Never Mix Geometry Managers
+
+`pack()` and `grid()` cannot share a parent, so a "flexible" child inside a packed
+row has to be measured and shrunk by hand — which is what `ActionRow` is for. If
+you find yourself manually adding and subtracting pixels to work out widths, you
+wanted `grid()` with a `weight` column.
+
+## Measuring `width` in Characters
+
+Widgets like `ttk.Combobox` and `tk.Text` size `-width` in characters, not
+pixels, and the conversion depends on the font. Do not hardcode it — measure it
+from the same `Style` the app is using, and cache per style:
+
+```python
+advance = tkfont.Font(root=widget, font=style.lookup(style_name, "font")).measure("0")
+reqwidth = chars * advance + overhead     # overhead measured live, per style
+```
+
+`ttkbootstrap.Style` has **no `measure()` method** — `lookup()` plus a real
+`tkfont.Font` is the way. And get the advance from the app's own `Style`
+instance; a second `Style` object will report a different theme's metrics and
+quietly compute the wrong widths.
+
+---
+
 # Recommended Architecture for a Serious Tkinter Application
 
 For an application that you expect to continue developing, a good starting architecture is:
@@ -1246,6 +1388,7 @@ The second architecture works for a 200-line prototype and becomes painful at 2,
 * Use `grid()` for structured layouts
 * Use `pack()` for simple layouts
 * Use frames to organize layouts
+* Give button strips an explicit minimum width and apply it to the window
 * Separate UI from business logic
 * Separate application state from widgets
 * Use services for file/database/network operations
@@ -1275,6 +1418,7 @@ The second architecture works for a 200-line prototype and becomes painful at 2,
 * Hard-coded styling everywhere
 * Repeating complicated dialog construction
 * Using `place()` for ordinary layouts
+* Relying on the parent being wide enough for a strip of buttons
 
 ---
 

@@ -11,6 +11,7 @@ except ImportError:
 
 from kbl import theme
 from kbl.markdown_render import MarkdownRenderer
+from kbl.widgets import ActionRow
 
 _TOOL_PREVIEW_LIMIT = 160
 
@@ -252,22 +253,43 @@ class HistoryView:
     # ---- message editing ----
 
     def _add_edit_footer(self, conv_index, role):
-        footer = ttk.Frame(self.widget)
-        ttk.Button(
-            footer,
-            text="Edit",
-            takefocus=0,
-            command=lambda ci=conv_index, r=role: self._on_edit(ci, r),
-        ).pack(side="left", padx=(0, 4))
-        ttk.Button(
-            footer,
-            text="Delete",
-            takefocus=0,
-            command=lambda ci=conv_index: self._on_delete(ci),
-        ).pack(side="left")
+        # The footer is embedded in the Text with window_create, so the Text
+        # sizes it from its own requested width and will simply clip it if the
+        # pane is narrower. An ActionRow gives the buttons fixed char widths
+        # and reports the width they need, so ChatPanel can refuse to go
+        # below it.
+        footer = ActionRow(self.widget)
+        footer.add(
+            ttk.Button(
+                footer,
+                text="Edit",
+                width=6,
+                takefocus=0,
+                command=lambda ci=conv_index, r=role: self._on_edit(ci, r),
+            ),
+            side="left",
+            padx=(0, 4),
+        )
+        footer.add(
+            ttk.Button(
+                footer,
+                text="Delete",
+                width=8,
+                takefocus=0,
+                command=lambda ci=conv_index: self._on_delete(ci),
+            ),
+            side="left",
+        )
         self.widget.window_create("end", window=footer)
         self.widget.insert("end", "\n")
         self._message_buttons.append(footer)
+
+    def min_content_width(self):
+        """Width needed by the widest message action strip still on screen."""
+        return max(
+            (btn.min_width for btn in self._message_buttons if isinstance(btn, ActionRow)),
+            default=0,
+        )
 
     # ---- full render ----
 

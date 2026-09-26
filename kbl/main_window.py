@@ -32,6 +32,7 @@ LAYOUTS = {
 }
 DEFAULT_LAYOUT = "tree-editor-chat"
 MIN_PANE_WIDTH = 20
+MIN_WINDOW_HEIGHT = 480
 
 
 class MainWindow(tk.Tk):
@@ -49,11 +50,15 @@ class MainWindow(tk.Tk):
 
         self.panels = {}
         self._layout_var = tk.StringVar(value=config.data["layout"])
+        self._min_width = 0
+        self._applied_min_width = -1
+        self._enforcing = False
 
         self._build_panels()
         self._wire_events()
         self._build_menus()
         self._apply_layout(config.data["layout"])
+        self._layout_widget.bind("<Configure>", self._on_layout_configure, add="+")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_restore()
@@ -135,8 +140,83 @@ class MainWindow(tk.Tk):
                 pass
         for key in LAYOUTS[name]:
             self._layout_widget.add(self.panels[key], weight=1)
+        for key in LAYOUTS[name]:
+            self.panels[key].bind("<Configure>", self._on_layout_configure, add="+")
         self.config.data["layout"] = name
         self._layout_var.set(name)
+        self._apply_min_width()
+
+    def _on_layout_configure(self, event):
+        self._apply_min_width()
+
+    def _apply_min_width(self):
+        """Refuse to get narrower than the visible panels actually need.
+
+        Tk has no minimum size on a frame, so an over-constrained strip is
+        always squeezed: buttons packed last get a 1x1 allocation and vanish.
+        Every panel reports the width its action rows need, and the toplevel is
+        told not to go below the sum, which is the only place Tk will honour it.
+
+        Rows only know their true width once they have been laid out, so this
+        runs again on every Configure: at __init__ time every panel reports 0
+        and the fallback floor is all that can be known. The value is only
+        written when it changes, otherwise minsize would retrigger Configure
+        forever.
+        """
+        keys = LAYOUTS[self.config.data["layout"]]
+        needed = MIN_PANE_WIDTH * len(keys)
+        for key in keys:
+            report = getattr(self.panels[key], "min_content_width", None)
+            if report is not None:
+                needed += report()
+        self._min_width = min(needed, self.winfo_screenwidth())
+        if self._min_width != self._applied_min_width:
+            self._applied_min_width = self._min_width
+            self.minsize(self._min_width, MIN_WINDOW_HEIGHT)
+        self._enforce_pane_widths()
+
+    def _enforce_pane_widths(self):
+        """Push every sash back inside its pane's minimum width.
+
+        minsize stops the window shrinking, but nothing stops a pane being
+        dragged narrow enough to squeeze its own toolbar, which is the other way
+        the buttons disappeared. Re-applying the sash on any Configure keeps the
+        panedwindow honest without fighting the user while the drag is legal.
+        """
+        widget = self._layout_widget
+        if not widget.winfo_ismapped():
+            return
+        keys = LAYOUTS[self.config.data["layout"]]
+        panes = widget.panes()
+        if len(panes) != len(keys) or self._enforcing:
+            return
+        minima = []
+        for key in keys:
+            report = getattr(self.panels[key], "min_content_width", None)
+            minima.append(max(MIN_PANE_WIDTH, report() if report else 0))
+        total = widget.winfo_width()
+        if sum(minima) > total:
+            return
+        self._enforcing = True
+        try:
+            left = 0
+            for index in range(len(panes) - 1):
+                try:
+                    current = widget.sashpos(index)
+                except tk.TclError:
+                    return
+                # Leave room for every pane to the right, then guarantee this
+                # one its own minimum. The two clamps cannot disagree, because
+                # sum(minima) <= total was checked above.
+                room = total - sum(minima[index + 1 :])
+                left = max(left + minima[index], min(current, room))
+                try:
+                    if abs(widget.sashpos(index) - left) > 1:
+                        widget.sashpos(index, left)
+                except tk.TclError:
+                    return
+        finally:
+            self._enforcing = False
 
     def _switch_layout(self, name):
         self._save_sizes()

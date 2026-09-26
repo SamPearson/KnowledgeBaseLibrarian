@@ -188,6 +188,19 @@ def apply(root, theme_name="dark"):
     return style
 
 
+def current_style():
+    """The shared ttk Style instance, for callers that need to query metrics.
+
+    ``apply()`` owns the instance so there is exactly one Style per
+    interpreter. Components should ask for it here rather than constructing
+    their own, otherwise a second Style would be created and the returned
+    metrics would describe the wrong theme.
+    """
+    if _STYLE_INSTANCE is not None:
+        return _STYLE_INSTANCE
+    return ttk.Style()
+
+
 def style_text(widget, bg="parchment", padx=16, pady=12):
     """Style a Text widget with theme colors."""
     widget.configure(

@@ -12,6 +12,7 @@ except ImportError:
 
 from kbl import theme
 from kbl.events import FileOpened, WorkspaceSelected
+from kbl.widgets import ActionRow, elide_middle
 
 
 class FileTreePanel(ttk.Frame):
@@ -22,14 +23,17 @@ class FileTreePanel(ttk.Frame):
         if bus is not None:
             bus.subscribe("workspace_selected", self._on_workspace_selected)
 
-        bar = ttk.Frame(self)
-        bar.pack(side="top", fill="x")
+        self.bar = ActionRow(self)
+        self.bar.pack(side="top", fill="x")
         self.workspace_label = ttk.Label(
-            bar, text="No workspace", anchor="w", style="Dim.TLabel"
+            self.bar, text="No workspace", anchor="w", style="Dim.TLabel"
         )
-        self.workspace_label.pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(bar, text="Refresh", command=self.refresh, width=8).pack(
-            side="right", padx=6, pady=4
+        self.bar.add(self.workspace_label, side="left", fill="x", expand=True, padx=6)
+        self.bar.add(
+            ttk.Button(self.bar, text="Refresh", command=self.refresh, width=8),
+            side="right",
+            padx=6,
+            pady=4,
         )
 
         self.tree = ttk.Treeview(self, show="tree", selectmode="browse")
@@ -51,9 +55,13 @@ class FileTreePanel(ttk.Frame):
         self.menu.add_command(label="Refresh", command=self.refresh)
         self.tree.bind("<Button-3>", self._show_menu)
 
+    def min_content_width(self):
+        """Width this panel needs before its toolbar starts clipping."""
+        return self.bar.min_width
+
     def set_workspace(self, path):
         self.workspace = Path(path)
-        self.workspace_label.config(text=self.workspace.name)
+        self.workspace_label.config(text=elide_middle(self.workspace.name, 28))
         self.refresh()
 
     def _on_workspace_selected(self, payload):

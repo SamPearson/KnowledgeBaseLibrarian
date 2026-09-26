@@ -38,6 +38,7 @@ _SUBAGENT_TOPICS = frozenset(
     }
 )
 from kbl.panels.attach_popup import AttachPopup
+from kbl.widgets import ActionRow, elide_middle
 from kbl.panels.history_view import HistoryView
 from kbl.panels.input_keys import bind_input_keys
 from kbl.panels.message_dialogs import (
@@ -80,46 +81,60 @@ class ChatPanel(ttk.Frame):
     # ---- UI ----
 
     def _build(self):
-        toolbar = ttk.Frame(self)
+        self._rows = []
+        self._min_width = 0
+
+        toolbar = ActionRow(self)
         toolbar.pack(fill="x")
+        self._rows.append(toolbar)
 
         self.status_var = tk.StringVar(value="Not configured")
-        ttk.Label(toolbar, textvariable=self.status_var, style="Dim.TLabel").pack(
-            side="left", padx=8, pady=4
+        toolbar.add(
+            ttk.Label(toolbar, textvariable=self.status_var, style="Dim.TLabel"),
+            side="left",
+            padx=8,
+            pady=4,
         )
         server_btn = ttk.Button(
             toolbar, text="Server...", command=self._configure_server
         )
-        server_btn.pack(side="right", padx=(0, 4), pady=4)
+        toolbar.add(server_btn, side="right", padx=(0, 4), pady=4)
 
-        combo_row = ttk.Frame(self)
+        combo_row = ActionRow(self)
         combo_row.pack(fill="x")
+        self._rows.append(combo_row)
         self.model_var = tk.StringVar()
         self.model_combo = ttk.Combobox(
             combo_row, textvariable=self.model_var, state="readonly", width=18
         )
-        self.model_combo.pack(side="left", padx=(8, 8), pady=4)
+        combo_row.add(
+            self.model_combo, side="left", flex_chars=8, padx=(8, 8), pady=4
+        )
         self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
         self.agent_var = tk.StringVar()
         self.agent_combo = ttk.Combobox(
             combo_row, textvariable=self.agent_var, state="readonly", width=16
         )
-        self.agent_combo.pack(side="left", padx=(0, 8), pady=4)
+        combo_row.add(
+            self.agent_combo, side="left", flex_chars=8, padx=(0, 8), pady=4
+        )
         self.agent_combo.bind("<<ComboboxSelected>>", self._on_agent_selected)
         self.conv_var = tk.StringVar()
         self.conv_combo = ttk.Combobox(
             combo_row, textvariable=self.conv_var, state="readonly", width=28
         )
-        self.conv_combo.pack(side="left", padx=(0, 8), pady=4)
+        combo_row.add(
+            self.conv_combo, side="left", flex_chars=12, padx=(0, 8), pady=4
+        )
         self.conv_combo.bind("<<ComboboxSelected>>", self._on_conv_selected)
         self.new_conv_btn = ttk.Button(
             combo_row, text="New", width=5, command=self._new_conversation
         )
-        self.new_conv_btn.pack(side="left", padx=(0, 4), pady=4)
+        combo_row.add(self.new_conv_btn, side="left", padx=(0, 4), pady=4)
         self.rename_conv_btn = ttk.Button(
             combo_row, text="Rename", width=8, command=self._rename_conversation
         )
-        self.rename_conv_btn.pack(side="left", padx=(0, 8), pady=4)
+        combo_row.add(self.rename_conv_btn, side="left", padx=(0, 8), pady=4)
         self.progress = ttk.Progressbar(
             combo_row, mode="indeterminate", length=140, maximum=1.0
         )
@@ -137,19 +152,21 @@ class ChatPanel(ttk.Frame):
         self.pw.add(self.view.widget, weight=1)
 
         entry_pane = ttk.Frame(self.pw)
-        entry_row = ttk.Frame(entry_pane)
+        entry_row = ActionRow(entry_pane)
         entry_row.pack(fill="both", expand=True, padx=4, pady=4)
         self.stop_button = ttk.Button(
             entry_row, text="Stop", width=8, command=self._stop, state="disabled"
         )
-        self.stop_button.pack(side="right", padx=(0, 4))
+        entry_row.add(self.stop_button, side="right", padx=(0, 4))
         self.send_button = ttk.Button(
             entry_row, text="Send", width=8, style="Accent.TButton", command=self._send
         )
-        self.send_button.pack(side="right", padx=(4, 0))
+        entry_row.add(self.send_button, side="right", padx=(4, 0))
         self.input = tk.Text(entry_row, height=3, width=30, wrap="word", undo=True)
         theme.style_text(self.input)
-        self.input.pack(side="left", fill="both", expand=True)
+        entry_row.add(
+            self.input, side="left", flex_chars=18, fill="both", expand=True
+        )
         self.pw.add(entry_pane, weight=0)
 
         self.after_idle(self._init_sash)
@@ -175,7 +192,18 @@ class ChatPanel(ttk.Frame):
     def _restyle(self):
         self.view.restyle()
         theme.style_text(self.input)
+        for row in self._rows:
+            row.remeasure()
         self._refresh_status()
+
+    def min_content_width(self):
+        """Width this panel cannot go below without losing a button.
+
+        Every ActionRow is asked, because a row that has run out of room has
+        already shrunk its combos to their floors -- the rest of the width is
+        what the buttons and the minimum usable combo each need.
+        """
+        return max((row.min_width for row in self._rows), default=0)
 
     # ---- status / server ----
 
@@ -183,7 +211,7 @@ class ChatPanel(ttk.Frame):
         config = self.config
         server = (config.data.get("server") or "").strip()
         if server:
-            self.status_var.set(server)
+            self.status_var.set(elide_middle(server, 44))
         else:
             self.status_var.set("Not configured")
 

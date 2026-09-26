@@ -10,6 +10,7 @@ except ImportError:
 
 from kbl import theme
 from kbl.markdown_render import MarkdownRenderer
+from kbl.widgets import ActionRow, elide_middle
 
 
 class EditorPanel(ttk.Frame):
@@ -25,18 +26,26 @@ class EditorPanel(ttk.Frame):
         self._build_body()
 
     def _build_toolbar(self):
-        bar = ttk.Frame(self)
-        bar.pack(side="top", fill="x")
-        self.title_label = ttk.Label(bar, text="No file", anchor="w", style="Dim.TLabel")
-        self.title_label.pack(side="left", fill="x", expand=True, padx=4)
+        self._toolbar = ActionRow(self)
+        self._toolbar.pack(side="top", fill="x")
+        self.title_label = ttk.Label(
+            self._toolbar, text="No file", anchor="w", style="Dim.TLabel"
+        )
+        self._toolbar.add(
+            self.title_label, side="left", fill="x", expand=True, padx=4
+        )
         self.save_button = ttk.Button(
-            bar, text="Save", command=self.save, width=6, state="disabled"
+            self._toolbar, text="Save", command=self.save, width=6, state="disabled"
         )
-        self.save_button.pack(side="right", padx=4, pady=2)
+        self._toolbar.add(self.save_button, side="right", padx=4, pady=2)
         self.mode_button = ttk.Button(
-            bar, text="Display", command=self.toggle_mode, width=8
+            self._toolbar, text="Display", command=self.toggle_mode, width=8
         )
-        self.mode_button.pack(side="right", padx=4, pady=2)
+        self._toolbar.add(self.mode_button, side="right", padx=4, pady=2)
+
+    def min_content_width(self):
+        """Width this panel cannot go below without losing a button."""
+        return self._toolbar.min_width
 
     def _build_body(self):
         body = ttk.Frame(self)
@@ -142,11 +151,12 @@ class EditorPanel(ttk.Frame):
     def _update_title(self):
         name = self.file_path.name if self.file_path else "No file"
         marker = "*" if self._dirty else ""
-        self.title_label.config(text=f"{marker}{name}")
+        self.title_label.config(text=elide_middle(f"{marker}{name}", 40))
 
     def _restyle(self):
         """Re-apply theme styling."""
         theme.style_text(self.text)
+        self._toolbar.remeasure()
         if self._fallback_text is not None:
             theme.style_text(self._fallback_text)
             self._refresh_display()
